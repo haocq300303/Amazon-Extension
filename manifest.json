@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "APO LNG Group",
+  "version": "0.2.0",
+  "description": "Auto Pull Order - LNG Group",
+  "icons": {
+    "16": "logo.jpg",
+    "32": "logo.jpg",
+    "48": "logo.jpg",
+    "128": "logo.jpg"
+  },
+
+  "permissions": ["cookies", "storage", "tabs", "scripting", "alarms"],
+
+  "host_permissions": [
+    "https://sellercentral.amazon.com/*",
+    "https://advertising.amazon.com/*",
+    "https://api.lngmerch.co/*"
+  ],
+
+  "background": { "service_worker": "background.js", "type": "module" },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "AP Order",
+    "default_icon": "logo.jpg"
+  }
+}
