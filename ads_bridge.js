@@ -57,9 +57,8 @@
       h["Amazon-Advertising-Api-Marketplaceid"] = adsMarketplaceId;
 
     // CSRF bắt buộc — thiếu 1 trong 2 sẽ bị 401
-    if (adsClientId) h["Amazon-Advertising-Api-Csrf-Data"] = adsClientId;
-    h["Amazon-Advertising-Api-Csrf-Token"] =
-      "gxiBTdOwMuN7M8NUFAgwSuYIlhOSbYyx0XqZwIAP1chJAAAAAQAAAABo0lg2cmF3AAAAAIwO8jooET7XVH9AB/E9xQ==";
+    if (adsCsrfData) h["Amazon-Advertising-Api-Csrf-Data"] = adsCsrfData;
+    if (adsCsrfToken) h["Amazon-Advertising-Api-Csrf-Token"] = adsCsrfToken;
 
     return h;
   }

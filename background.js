@@ -21,7 +21,6 @@ async function getCookie(url, name) {
     return "";
   }
 }
-
 async function amazonHeaders() {
   const a2z = await getCookie(`${SC_BASE}/`, "anti-csrftoken-a2z");
   const xcsrf = await getCookie(`${SC_BASE}/`, "x-amz-csrf");
@@ -67,7 +66,7 @@ async function getCfg(keys = []) {
     "shopId",
     "refNewOrders",
     "refAllOrders",
-    // các trường Ads user nhập để bridge dùng (nếu cần)
+    // Ads (nếu bridge cần)
     "adsAccountId",
     "adsAdvertiserId",
     "adsClientId",
@@ -78,7 +77,6 @@ async function getCfg(keys = []) {
   ]);
   return all;
 }
-
 function deriveApiUrls(ingestUrl) {
   const base =
     ingestUrl?.replace(/\/ext\/ingest(?:\/.*)?$/i, "") || ingestUrl || "";
@@ -128,7 +126,6 @@ function buildAllOrdersPayload(startDur = "P1D", endDur = "P0D") {
     endDate: endDur,
   };
 }
-
 async function requestReferenceIdNew(body) {
   const url = `${SC_BASE}/order-reports-and-feeds/api/reportRequest`;
   const res = await requestOnce(url, {
@@ -146,7 +143,6 @@ async function requestReferenceIdNew(body) {
   const j = await res.json();
   return j?.referenceId || j?.data?.referenceId;
 }
-
 async function requestReferenceIdAll(body) {
   const url = `${SC_BASE}/order-reports-and-feeds/api/v1/reportRequest`;
   const res = await requestOnce(url, {
@@ -164,7 +160,6 @@ async function requestReferenceIdAll(body) {
   const j = await res.json();
   return j?.referenceId || j?.data?.referenceId;
 }
-
 async function checkReportReady(referenceId) {
   const url = `${SC_BASE}/order-reports-and-feeds/api/documentMetadata?referenceId=${encodeURIComponent(
     referenceId
@@ -188,7 +183,6 @@ async function checkReportReady(referenceId) {
   if (!documentId) return { ready: false, reason: "NO_DOCUMENT_ID_YET" };
   return { ready: true, documentId };
 }
-
 async function downloadByDocumentId(documentId) {
   const dlUrl = `${SC_BASE}/order-reports-and-feeds/feeds/download?documentId=${encodeURIComponent(
     documentId
@@ -335,7 +329,6 @@ async function runImportNewOrders(referenceOverride) {
 
   return { ok: true, rows, documentId, referenceId, ingest };
 }
-
 async function runReportAllOrders(referenceOverride) {
   const { ingestUrl, shopId, refAllOrders } = await getCfg();
   if (!ingestUrl) throw new Error("Missing ingestUrl (Options)");
@@ -470,6 +463,7 @@ async function fetchAdsJsonCS(payload) {
   return j;
 }
 
+// Payload cho CrossProgramCampaignReport
 function buildCampaignSpendPayload({
   startDate,
   endDate,
@@ -482,7 +476,7 @@ function buildCampaignSpendPayload({
       reportId: "CrossProgramCampaignReport",
       currencyOfView: "USD",
       endDate,
-      // ⚠ KHÔNG đưa 'date' vào fields (API không hỗ trợ cột này)
+      // KHÔNG đưa 'date' (API không hỗ trợ)
       fields: ["campaignName", "spend", "state"],
       filter: {
         and: [
@@ -496,14 +490,15 @@ function buildCampaignSpendPayload({
       },
       offsetPagination: { size, offset },
       startDate,
-      timeUnits: [timeUnit], // DAILY vẫn giữ nguyên
+      timeUnits: [timeUnit],
     },
   };
 }
 
 /** Lấy mọi bản ghi theo pagination; mặc định size=300 */
 async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
-  const firstJson = await adsRetrieveViaContentScript(
+  // ---- LẦN 1: dùng fetchAdsJsonCS (đÃ parse JSON) ----
+  const firstJson = await fetchAdsJsonCS(
     buildCampaignSpendPayload({
       startDate,
       endDate,
@@ -512,9 +507,11 @@ async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
     })
   );
 
-  const report = firstJson?.data?.report || {};
-  const count = report?.numberOfRecords ?? 0;
-  const rows1 = Array.isArray(report?.data) ? report.data : [];
+  // JSON thực tế: { report: { numberOfRecords, data: [...] } }
+  // (giữ fallback cho { data: { report: {...} } } nếu có môi trường khác)
+  const report0 = firstJson?.report || firstJson?.data?.report || {};
+  const count = report0?.numberOfRecords ?? 0;
+  const rows1 = Array.isArray(report0?.data) ? report0.data : [];
   if (count === 0 || rows1.length === 0) return [];
 
   const totalPages = Math.ceil(count / pageSize);
@@ -529,17 +526,15 @@ async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
         offset: page * pageSize,
       })
     );
-    const more = Array.isArray(js?.data?.report?.data)
-      ? js.data.report.data
-      : [];
+    const report = js?.report || js?.data?.report || {};
+    const more = Array.isArray(report?.data) ? report.data : [];
     if (!more.length) break;
     all = all.concat(more);
   }
 
-  // chuẩn hoá 3 cột
+  // Chuẩn hoá còn 3 cột (date = startDate vì API ko trả cột ngày)
   return all.map((r) => ({
     campaignName: r.campaignName ?? "",
-    // vì API không cho field 'date', ta gán đúng cái ngày đang request
     date: startDate,
     spend: Number(r.spend ?? 0),
   }));
@@ -567,7 +562,6 @@ async function runExportAdsSpend(date) {
   const rows = await fetchAllCampaignSpend(date, date, 300);
   const txt = campaignRowsToTxt(rows);
 
-  // gửi thêm date
   const ingestRes = await postFileTo(adsSpendUrl, {
     shopId,
     day: date,

@@ -71,16 +71,23 @@ function previewEndpoints() {
     "adsAdvertiserId",
     "adsClientId",
     "adsMarketplaceId",
+    // NEW
+    "adsCsrfData",
+    "adsCsrfToken",
   ]);
   if (st.ingestUrl) $("#ingestUrl").value = st.ingestUrl;
   if (st.ingestToken) $("#ingestToken").value = st.ingestToken;
   if (st.shopId) $("#shopId").value = st.shopId;
 
-  // NEW: ads fields
+  // Ads headers
   if (st.adsAccountId) $("#adsAccountId").value = st.adsAccountId;
   if (st.adsAdvertiserId) $("#adsAdvertiserId").value = st.adsAdvertiserId;
   if (st.adsClientId) $("#adsClientId").value = st.adsClientId;
   if (st.adsMarketplaceId) $("#adsMarketplaceId").value = st.adsMarketplaceId;
+
+  // NEW: CSRF Data/Token
+  if (st.adsCsrfData) $("#adsCsrfData").value = st.adsCsrfData;
+  if (st.adsCsrfToken) $("#adsCsrfToken").value = st.adsCsrfToken;
 
   setTodayDefault();
   previewEndpoints();
@@ -95,11 +102,15 @@ $("#saveBtn").onclick = async () => {
   const ingestToken = $("#ingestToken").value.trim();
   const shopId = $("#shopId").value.trim();
 
-  // NEW: ads fields
+  // Ads headers
   const adsAccountId = $("#adsAccountId").value.trim();
   const adsAdvertiserId = $("#adsAdvertiserId").value.trim();
   const adsClientId = $("#adsClientId").value.trim();
   const adsMarketplaceId = $("#adsMarketplaceId").value.trim();
+
+  // NEW: CSRF Data/Token
+  const adsCsrfData = $("#adsCsrfData").value.trim();
+  const adsCsrfToken = $("#adsCsrfToken").value.trim();
 
   ingestUrl = normalizeBaseUrl(ingestUrl);
 
@@ -121,6 +132,9 @@ $("#saveBtn").onclick = async () => {
     adsAdvertiserId,
     adsClientId,
     adsMarketplaceId,
+    // NEW
+    adsCsrfData,
+    adsCsrfToken,
   });
 
   $("#status").textContent = "✅ Đã lưu (lần sau không cần nhập lại).";
