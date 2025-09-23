@@ -17,7 +17,13 @@
     "https://advertising.amazon.com/*",
     "https://api.lngmerch.co/*"
   ],
-
+  "content_scripts": [
+    {
+      "matches": ["https://advertising.amazon.com/*"],
+      "js": ["ads_bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "background": { "service_worker": "background.js", "type": "module" },
   "options_page": "options.html",
   "action": {

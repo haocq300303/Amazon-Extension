@@ -1,17 +1,18 @@
 // ===============================
-// background.js (MV3) — APO LNG (poll 10s x 5, stop on TSV)
-//  - 3 endpoints (importNew/reportAll/adsSpend)
-//  - NEW ref:  /api/reportRequest
-//  - ALL ref:  /api/v1/reportRequest
-//  - Import NEW: gửi {shopId, file(.txt), type:"New"}
-//  - Report ALL & Ads: chỉ {shopId, file(.txt)}
-//  - Ads (retrieveReport): TXT header "Campaigns\tDate\tSpend"
+// background.js (MV3) — APO LNG
+//  - Import NEW: {shopId, file(.txt), type:"New"}
+//  - Report ALL: {shopId, file(.txt)}
+//  - Ads: gọi retrieveReport qua content-script (cookie/header chuẩn của tab Ads)
+//  - Xuất TXT: "Campaigns\tDate\tSpend"
 // ===============================
 const log = (...args) => console.log("[APO]", ...args);
 
 const SC_BASE = "https://sellercentral.amazon.com";
+const ADS_BASE = "https://advertising.amazon.com";
+const ADS_RETRIEVE_URL =
+  "https://advertising.amazon.com/a9g-api-gateway/cm/dds/retrieveReport";
 
-// ---------- Cookies & CSRF ----------
+// ---------- Cookies & CSRF (Seller Central) ----------
 async function getCookie(url, name) {
   try {
     const ck = await chrome.cookies.get({ url, name });
@@ -20,6 +21,7 @@ async function getCookie(url, name) {
     return "";
   }
 }
+
 async function amazonHeaders() {
   const a2z = await getCookie(`${SC_BASE}/`, "anti-csrftoken-a2z");
   const xcsrf = await getCookie(`${SC_BASE}/`, "x-amz-csrf");
@@ -65,10 +67,18 @@ async function getCfg(keys = []) {
     "shopId",
     "refNewOrders",
     "refAllOrders",
+    // các trường Ads user nhập để bridge dùng (nếu cần)
+    "adsAccountId",
+    "adsAdvertiserId",
+    "adsClientId",
+    "adsMarketplaceId",
+    "adsCsrfData",
+    "adsCsrfToken",
     ...keys,
   ]);
   return all;
 }
+
 function deriveApiUrls(ingestUrl) {
   const base =
     ingestUrl?.replace(/\/ext\/ingest(?:\/.*)?$/i, "") || ingestUrl || "";
@@ -118,6 +128,7 @@ function buildAllOrdersPayload(startDur = "P1D", endDur = "P0D") {
     endDate: endDur,
   };
 }
+
 async function requestReferenceIdNew(body) {
   const url = `${SC_BASE}/order-reports-and-feeds/api/reportRequest`;
   const res = await requestOnce(url, {
@@ -135,6 +146,7 @@ async function requestReferenceIdNew(body) {
   const j = await res.json();
   return j?.referenceId || j?.data?.referenceId;
 }
+
 async function requestReferenceIdAll(body) {
   const url = `${SC_BASE}/order-reports-and-feeds/api/v1/reportRequest`;
   const res = await requestOnce(url, {
@@ -152,6 +164,7 @@ async function requestReferenceIdAll(body) {
   const j = await res.json();
   return j?.referenceId || j?.data?.referenceId;
 }
+
 async function checkReportReady(referenceId) {
   const url = `${SC_BASE}/order-reports-and-feeds/api/documentMetadata?referenceId=${encodeURIComponent(
     referenceId
@@ -161,7 +174,6 @@ async function checkReportReady(referenceId) {
   if (res.status >= 300 && res.status < 400)
     return { ready: false, reason: "PENDING_REDIRECT" };
 
-  // A) có thể trả file thẳng
   if (isTsvish(res)) {
     const tsv = await res.text();
     const { rows } = parseTSV(tsv);
@@ -176,6 +188,7 @@ async function checkReportReady(referenceId) {
   if (!documentId) return { ready: false, reason: "NO_DOCUMENT_ID_YET" };
   return { ready: true, documentId };
 }
+
 async function downloadByDocumentId(documentId) {
   const dlUrl = `${SC_BASE}/order-reports-and-feeds/feeds/download?documentId=${encodeURIComponent(
     documentId
@@ -225,8 +238,13 @@ async function postFileTo(url, fields) {
   const { ingestToken } = await getCfg();
   const fd = new FormData();
 
-  if (fields.shopId) fd.append("shopId", fields.shopId);
+  // append các key primitive (trừ file/filename)
+  for (const [k, v] of Object.entries(fields || {})) {
+    if (k === "file" || k === "filename") continue;
+    if (v !== undefined && v !== null) fd.append(k, String(v));
+  }
 
+  // file
   if (typeof fields.file === "string") {
     const name = fields.filename || "file.txt";
     fd.append("file", new Blob([fields.file], { type: "text/plain" }), name);
@@ -240,8 +258,6 @@ async function postFileTo(url, fields) {
   } else {
     throw new Error("postFileTo: file missing");
   }
-
-  if (fields.type) fd.append("type", fields.type); // chỉ import NEW truyền vào
 
   const res = await fetch(url, {
     method: "POST",
@@ -295,7 +311,7 @@ async function runImportNewOrders(referenceOverride) {
     rows = r.rows;
   }
 
-  // 4) Import NEW: {shopId, file(.txt), type:"New"}
+  // 4) push
   const fd = new FormData();
   if (shopId) fd.append("shopId", shopId);
   fd.append(
@@ -356,7 +372,6 @@ async function runReportAllOrders(referenceOverride) {
     rows = r.rows;
   }
 
-  // Report ALL: chỉ {shopId, file(.txt)}
   const ingest = await postFileTo(reportAllUrl, {
     shopId,
     file: { name: `orders-all-${referenceId}.txt`, text: tsv },
@@ -366,12 +381,95 @@ async function runReportAllOrders(referenceOverride) {
 }
 
 // ===============================
-// ADS via retrieveReport (Campaigns, Date, Spend)
+// ADS qua content-script (cookie/header y như tab Ads)
 // ===============================
-const ADS_RETRIEVE_URL =
-  "https://advertising.amazon.com/a9g-api-gateway/cm/dds/retrieveReport";
+async function ensureAdsTab() {
+  // 1) tìm tab Ads
+  let tabs = await chrome.tabs.query({ url: `${ADS_BASE}/*` });
+  let tab;
+  if (tabs.length) {
+    tab = tabs[0];
+  } else {
+    // 2) mở tab Campaign Manager nếu chưa có
+    tab = await chrome.tabs.create({
+      url: `${ADS_BASE}/cm/campaigns`,
+      active: false,
+    });
+  }
 
-/** payload chỉ lấy 3 field + filter ENABLED + phân trang */
+  // 3) chờ tab hoàn tất (để content-script được inject)
+  if (tab.status !== "complete") {
+    await new Promise((resolve) => {
+      const onUpdated = (tid, info) => {
+        if (tid === tab.id && info.status === "complete") {
+          chrome.tabs.onUpdated.removeListener(onUpdated);
+          resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(onUpdated);
+    });
+  }
+  return tab.id;
+}
+
+// Gửi message tới ads_bridge.js; nếu chưa có thì inject rồi retry
+async function adsRetrieveViaContentScript(payload) {
+  const tabId = await ensureAdsTab();
+
+  const sendOnce = () =>
+    chrome.tabs.sendMessage(tabId, {
+      type: "ADS_FETCH_REPORT",
+      url: ADS_RETRIEVE_URL,
+      payload,
+    });
+
+  // thử gửi một lần
+  try {
+    const r = await sendOnce();
+    if (r) return r;
+  } catch (_) {}
+
+  // inject bridge nếu chưa có
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["ads_bridge.js"],
+    });
+    await new Promise((r) => setTimeout(r, 300));
+  } catch (_) {}
+
+  // retry tối đa 2 lần
+  for (let i = 0; i < 2; i++) {
+    try {
+      const r = await sendOnce();
+      if (r) return r;
+    } catch {
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+  throw new Error("Could not establish connection to ads_bridge.js");
+}
+
+// Wrapper: gửi qua content-script và PARSE JSON an toàn
+async function fetchAdsJsonCS(payload) {
+  const r = await adsRetrieveViaContentScript(payload); // {status, ok, text}
+  if (!r) throw new Error("retrieveReport no response");
+  if (!r.ok) {
+    const sample =
+      typeof r.text === "string" ? r.text : JSON.stringify(r.text || "");
+    throw new Error(`retrieveReport ${r.status} — ${sample.slice(0, 200)}`);
+  }
+  let j;
+  try {
+    j = JSON.parse(r.text || "{}");
+  } catch {
+    const sample =
+      typeof r.text === "string" ? r.text : JSON.stringify(r.text || "");
+    throw new Error(`retrieveReport non-JSON: ${sample.slice(0, 200)}`);
+  }
+  return j;
+}
+
 function buildCampaignSpendPayload({
   startDate,
   endDate,
@@ -383,58 +481,37 @@ function buildCampaignSpendPayload({
     reportConfig: {
       reportId: "CrossProgramCampaignReport",
       currencyOfView: "USD",
-      endDate, // "YYYY-MM-DD"
+      endDate,
+      // ⚠ KHÔNG đưa 'date' vào fields (API không hỗ trợ cột này)
+      fields: ["campaignName", "spend", "state"],
+      filter: {
+        and: [
+          {
+            field: "state",
+            values: ["ENABLED"],
+            comparisonOperator: "IN",
+            not: false,
+          },
+        ],
+      },
+      offsetPagination: { size, offset },
+      startDate,
+      timeUnits: [timeUnit], // DAILY vẫn giữ nguyên
     },
-    fields: ["campaignName", "date", "spend"],
-    filter: {
-      and: [
-        {
-          field: "state",
-          values: ["ENABLED"],
-          comparisonOperator: "IN",
-          not: false,
-        },
-      ],
-    },
-    offsetPagination: { size, offset },
-    reportId: "CrossProgramCampaignReport",
-    startDate, // "YYYY-MM-DD"
-    timeUnits: [timeUnit], // "DAILY" để có cột date
   };
 }
 
-async function fetchAdsJson(payload) {
-  const headers = {
-    ...(await amazonHeaders()),
-    "content-type": "application/json;charset=UTF-8",
-  };
-  const res = await fetch(ADS_RETRIEVE_URL, {
-    method: "POST",
-    credentials: "include",
-    headers,
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const sample = await res.text().catch(() => "");
-    throw new Error(`retrieveReport ${res.status} — ${sample.slice(0, 200)}`);
-  }
-  const ct = (res.headers.get("content-type") || "").toLowerCase();
-  if (!ct.includes("application/json")) {
-    const sample = await res.text().catch(() => "");
-    throw new Error(`retrieveReport non-JSON: ${sample.slice(0, 200)}`);
-  }
-  return res.json();
-}
-
-/** Lấy mọi bản ghi theo count trả về; mặc định size=300 */
+/** Lấy mọi bản ghi theo pagination; mặc định size=300 */
 async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
-  const firstPayload = buildCampaignSpendPayload({
-    startDate,
-    endDate,
-    size: Math.max(1, Math.min(pageSize, 300)),
-    offset: 0,
-  });
-  const firstJson = await fetchAdsJson(firstPayload);
+  const firstJson = await adsRetrieveViaContentScript(
+    buildCampaignSpendPayload({
+      startDate,
+      endDate,
+      size: Math.max(1, Math.min(pageSize, 300)),
+      offset: 0,
+    })
+  );
+
   const report = firstJson?.data?.report || {};
   const count = report?.numberOfRecords ?? 0;
   const rows1 = Array.isArray(report?.data) ? report.data : [];
@@ -444,30 +521,31 @@ async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
   let all = rows1;
 
   for (let page = 1; page < totalPages; page++) {
-    const offset = page * pageSize;
-    const payload = buildCampaignSpendPayload({
-      startDate,
-      endDate,
-      size: pageSize,
-      offset,
-    });
-    const js = await fetchAdsJson(payload);
+    const js = await fetchAdsJsonCS(
+      buildCampaignSpendPayload({
+        startDate,
+        endDate,
+        size: pageSize,
+        offset: page * pageSize,
+      })
+    );
     const more = Array.isArray(js?.data?.report?.data)
       ? js.data.report.data
       : [];
-    if (more.length === 0) break;
+    if (!more.length) break;
     all = all.concat(more);
   }
 
-  // chuẩn hoá còn 3 trường
+  // chuẩn hoá 3 cột
   return all.map((r) => ({
     campaignName: r.campaignName ?? "",
-    date: r.date ?? endDate,
+    // vì API không cho field 'date', ta gán đúng cái ngày đang request
+    date: startDate,
     spend: Number(r.spend ?? 0),
   }));
 }
 
-/** Xuất TXT header: Campaigns\tDate\tSpend */
+// Xuất TXT: Campaigns\tDate\tSpend
 function campaignRowsToTxt(rows) {
   const header = "Campaigns\tDate\tSpend";
   const lines = rows.map((r) =>
@@ -486,15 +564,13 @@ async function runExportAdsSpend(date) {
   const { adsSpendUrl } = deriveApiUrls(ingestUrl);
   if (!date) throw new Error("date (YYYY-MM-DD) required");
 
-  // 1) lấy toàn bộ rows (ENABLED, fields 3 cột)
   const rows = await fetchAllCampaignSpend(date, date, 300);
-
-  // 2) TXT "Campaigns\tDate\tSpend"
   const txt = campaignRowsToTxt(rows);
 
-  // 3) gửi backend — chỉ shopId + file (.txt)
+  // gửi thêm date
   const ingestRes = await postFileTo(adsSpendUrl, {
     shopId,
+    day: date,
     file: { name: `ads-spend-${date}.txt`, text: txt },
   });
 
