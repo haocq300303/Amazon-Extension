@@ -1,3 +1,5 @@
+import { io as WSIO } from "./lib/socket.io.esm.min.js";
+
 // ===============================
 // background.js (MV3) — APO LNG
 //  - Import NEW: {shopId, file(.txt), type:"New"}
@@ -481,10 +483,10 @@ function buildCampaignSpendPayload({
       filter: {
         and: [
           {
-            field: "state",
-            values: ["ENABLED"],
             comparisonOperator: "IN",
+            field: "state",
             not: false,
+            values: ["ENABLED", "PAUSED", "ARCHIVED"],
           },
         ],
       },
@@ -571,6 +573,108 @@ async function runExportAdsSpend(date) {
   return { ok: true, rows: rows.length, ingest: ingestRes };
 }
 
+// ====== SOCKET.IO (Kết nối tới server realtime, giữ nguyên logic cũ) ======
+let WS_sock = null;
+
+async function wsGetBase() {
+  // Ưu tiên wsBase; nếu không có thì lấy ingestUrl; fallback localhost
+  const s = await chrome.storage.local.get(["wsBase", "ingestUrl"]);
+  let base = (s.wsBase || s.ingestUrl || "").trim();
+  base = base.replace(/\/ext\/ingest(?:\/.*)?$/i, "").replace(/\/+$/, "");
+  if (!base) base = "http://localhost:5000";
+  return base;
+}
+
+async function wsEnsureIdentity() {
+  let { clientId, clientLabel } = await chrome.storage.local.get([
+    "clientId",
+    "clientLabel",
+  ]);
+  if (!clientId) {
+    clientId =
+      "cid-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    await chrome.storage.local.set({ clientId });
+  }
+  if (!clientLabel) {
+    clientLabel = "Machine-" + clientId.slice(-4);
+    await chrome.storage.local.set({ clientLabel });
+  }
+  return { clientId, clientLabel };
+}
+
+async function wsConnect() {
+  if (WS_sock?.connected) return { ok: true, already: true };
+
+  const base = await wsGetBase();
+  const { clientId, clientLabel } = await wsEnsureIdentity();
+  const ver = chrome.runtime.getManifest().version;
+
+  WS_sock = WSIO(base, {
+    path: "/socket",
+    transports: ["websocket"],
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelayMax: 30000,
+  });
+
+  WS_sock.on("connect", () => {
+    console.log("[WS] connected →", base);
+    WS_sock.emit("HELLO", {
+      clientId,
+      label: clientLabel,
+      version: "ext-" + ver,
+    });
+    chrome.runtime
+      .sendMessage({ type: "WS_EVENT", event: "CONNECT", base })
+      .catch(() => {});
+  });
+
+  WS_sock.on("connect_error", (err) => {
+    console.warn("[WS] connect_error", err?.message || err);
+    chrome.runtime
+      .sendMessage({
+        type: "WS_EVENT",
+        event: "CONNECT_ERROR",
+        error: String(err?.message || err),
+      })
+      .catch(() => {});
+  });
+
+  WS_sock.on("disconnect", (reason) => {
+    console.warn("[WS] disconnect", reason);
+    chrome.runtime
+      .sendMessage({ type: "WS_EVENT", event: "DISCONNECT", reason })
+      .catch(() => {});
+  });
+
+  // Nhận lệnh test từ server
+  WS_sock.on("RUN_JOB", ({ jobId, reason }) => {
+    console.log("[WS] RUN_JOB", jobId, reason);
+    try {
+      WS_sock.emit("ACK", { jobId });
+    } catch {}
+    chrome.runtime
+      .sendMessage({
+        type: "WS_EVENT",
+        event: "RUN_JOB",
+        payload: { jobId, reason },
+      })
+      .catch(() => {});
+  });
+
+  return { ok: true, base };
+}
+
+function wsDisconnect() {
+  try {
+    WS_sock?.disconnect();
+    WS_sock = null;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, message: String(e) };
+  }
+}
+
 // ===============================
 // Bridge cho Options
 // ===============================
@@ -584,6 +688,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return sendResponse(await runReportAllOrders(msg.payload?.referenceId));
       if (msg.type === "RUN_ADS_SPEND")
         return sendResponse(await runExportAdsSpend(msg.payload?.date));
+      if (msg.type === "WS_CONNECT") return sendResponse(await wsConnect());
+      if (msg.type === "WS_DISCONNECT") return sendResponse(wsDisconnect());
       sendResponse({ ok: false, message: "Unknown command" });
     } catch (e) {
       sendResponse({ ok: false, message: String(e.message || e) });

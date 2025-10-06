@@ -15,7 +15,8 @@
   "host_permissions": [
     "https://sellercentral.amazon.com/*",
     "https://advertising.amazon.com/*",
-    "https://api.lngmerch.co/*"
+    "https://api.lngmerch.co/*",
+    "http://localhost:5000/*"
   ],
   "content_scripts": [
     {

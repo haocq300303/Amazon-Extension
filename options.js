@@ -179,6 +179,33 @@ $("#testAds").onclick = async () => {
   }
 };
 
+// Kết nối WS: lấy base từ ingestUrl đang nhập/lưu
+document.getElementById("testWS").onclick = async () => {
+  // Lưu ingestUrl hiện tại (nếu bạn đang thay đổi)
+  const base = normalizeBaseUrl(
+    document.getElementById("ingestUrl").value.trim()
+  );
+  if (base) await chrome.storage.local.set({ ingestUrl: base });
+
+  document.getElementById("log").textContent = "Connecting WS...";
+  try {
+    const r = await chrome.runtime.sendMessage({ type: "WS_CONNECT" });
+    log("WS_CONNECT → " + JSON.stringify(r));
+  } catch (e) {
+    log("❌ WS_CONNECT error: " + (e.message || e));
+  }
+};
+
+// Nhận log/evt từ background và in ra Options
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "WS_EVENT") {
+    const line =
+      `[WS ${msg.event}] ` +
+      (msg.error || JSON.stringify(msg.payload || msg.base || ""));
+    log(line);
+  }
+});
+
 // ===== Open Service Worker console =====
 document.getElementById("openSW").onclick = () => {
   alert(
