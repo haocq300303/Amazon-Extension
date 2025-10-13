@@ -214,6 +214,9 @@
       .test-section {
         border-left: 4px solid #f39c12;
       }
+      .control-section {
+        border-left: 4px solid #27ae60;
+      }
       .section-title {
         font-size: 1.1em;
         font-weight: 600;
@@ -262,6 +265,7 @@
       </div>
 
       <div class="content">
+        <!-- CONFIG -->
         <section class="config-section">
           <div class="section-title">🔧 Cấu hình hệ thống</div>
 
@@ -281,17 +285,14 @@
               <label for="shopId">🏪 Shop ID (Seller ID)</label>
               <input id="shopId" placeholder="A3XXXXXXX..." />
             </div>
-            <div>
-              <label for="wsNote">⚡ WebSocket (tự động)</label>
-              <input
-                id="wsNote"
-                disabled
-                value="Suy ra từ API Base URL: {host}/ws"
-              />
+            <div style="display: flex; align-items: flex-end; gap: 8px">
+              <button id="btnConnect" title="Đăng ký client lên backend">
+                🔌 Connect backend
+              </button>
             </div>
           </div>
 
-          <!-- NEW: Amazon Ads credentials -->
+          <!-- Amazon Ads credentials -->
           <div class="section-title" style="margin-top: 14px">
             📣 Amazon Ads Credentials
           </div>
@@ -335,7 +336,6 @@
             </div>
           </div>
 
-          <!-- NEW: CSRF data + token -->
           <div class="row">
             <div>
               <label for="adsCsrfData">Amazon-Advertising-Api-Csrf-Data</label>
@@ -365,9 +365,23 @@
           <div class="ok" id="status"></div>
         </section>
 
+        <!-- CONTROL: Auto schedule & Run -->
+        <section class="control-section">
+          <div class="section-title">
+            ⏱ Auto Import (0h • 4h • 8h • 12h • 16h • 20h)
+          </div>
+          <div class="button-row">
+            <button id="btnAutoEnable">🟢 Enable Auto</button>
+            <button id="btnAutoDisable">🔴 Disable Auto</button>
+            <button id="btnAutoRunNow">⚡ Run Now</button>
+            <button id="openSW">🔍 Open Service Worker Console</button>
+          </div>
+          <div class="ok" id="autoStatus">Auto: ...</div>
+        </section>
+
+        <!-- TEST -->
         <section class="test-section">
           <div class="section-title">🧪 Kiểm tra & Thử nghiệm</div>
-
           <div class="button-row">
             <button id="testImport">▶️ Import Orders (NEW)</button>
             <button id="testReport">▶️ Import Report Orders</button>
@@ -381,11 +395,6 @@
             <div style="display: flex; align-items: end">
               <button id="testAds">📈 Test Export Ads Spend</button>
             </div>
-          </div>
-
-          <div class="button-row">
-            <button id="testWS">🔌 Test WebSocket Connect</button>
-            <button id="openSW">🔍 Mở Console Service Worker</button>
           </div>
 
           <pre id="log"></pre>

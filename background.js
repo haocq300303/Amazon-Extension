@@ -1,15 +1,13 @@
-import { io as WSIO } from "./lib/socket.io.esm.min.js";
-
 /* ===============================
-   background.js (MV3) — APO LNG
-   - Import NEW: {shopId, file(.txt), type:"New"}
-   - Report ALL: {shopId, file(.txt)}
-   - Ads: gọi retrieveReport qua content-script (cookie/header chuẩn của tab Ads)
-   - Xuất TXT: "Campaigns\tDate\tSpend"
-   - Bổ sung:
-     * Auto scheduler (5h mặc định) + điều khiển từ backend (SYNC_CONFIG/RUN_NOW qua Socket.IO)
-     * Message API: AUTO_SET, AUTO_RUN_NOW
+   background.js (MV3) — APO LNG (No Socket.IO)
+   - Import NEW / Report ALL / Ads (giữ nguyên logic gọi Amazon)
+   - Lịch tự động theo mốc cố định: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 (giờ LOCAL)
+   - Không Socket.IO
+   - Gửi log THÀNH CÔNG về backend: POST /api/logs/collect
+   - NEW: BACKEND_CONNECT -> POST /api/clients/register (shopId + clientId)
+   - NEW: AUTO_ENABLE / AUTO_DISABLE để bật/tắt auto import
    =============================== */
+
 const log = (...args) => console.log("[APO]", ...args);
 
 const SC_BASE = "https://sellercentral.amazon.com";
@@ -63,7 +61,7 @@ async function requestOnce(url, init = {}) {
   });
 }
 
-/* ---------- Storage ---------- */
+/* ---------- Storage / URLs ---------- */
 async function getCfg(keys = []) {
   const all = await chrome.storage.local.get([
     "ingestUrl",
@@ -78,10 +76,8 @@ async function getCfg(keys = []) {
     "adsMarketplaceId",
     "adsCsrfData",
     "adsCsrfToken",
-    // WS / Auto
-    "wsBase",
+    // Auto
     "autoEnabled",
-    "autoIntervalMin",
     ...keys,
   ]);
   return all;
@@ -90,10 +86,31 @@ function deriveApiUrls(ingestUrl) {
   const base =
     ingestUrl?.replace(/\/ext\/ingest(?:\/.*)?$/i, "") || ingestUrl || "";
   return {
+    base,
     importNewUrl: `${base}/api/order/update-from-xlsx`,
     reportAllUrl: `${base}/api/report/import-file`,
     adsSpendUrl: `${base}/api/ads/import-day`,
+    logCollectUrl: `${base}/api/logs/ext/log`,
+    clientRegisterUrl: `${base}/api/shop/ext/connect`,
   };
+}
+
+/* ---------- Identity (gắn vào log / đăng ký client) ---------- */
+async function ensureIdentity() {
+  let { clientId, clientLabel } = await chrome.storage.local.get([
+    "clientId",
+    "clientLabel",
+  ]);
+  if (!clientId) {
+    clientId =
+      "cid-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    await chrome.storage.local.set({ clientId });
+  }
+  if (!clientLabel) {
+    clientLabel = "Machine-" + clientId.slice(-4);
+    await chrome.storage.local.set({ clientLabel });
+  }
+  return { clientId, clientLabel };
 }
 
 /* ---------- Tiny TSV helper ---------- */
@@ -274,8 +291,61 @@ async function postFileTo(url, fields) {
     : { ok: true, raw: await res.text() };
 }
 
+/* ---------- Simple success LOG (HTTP) ---------- */
+async function postSuccessLog(phase, meta = {}) {
+  try {
+    const { ingestUrl } = await getCfg();
+    const { base, logCollectUrl } = deriveApiUrls(ingestUrl);
+    if (!base) return;
+    const { clientId, clientLabel } = await ensureIdentity();
+    const payload = {
+      ts: Date.now(),
+      phase, // 'import' | 'report' | 'ads'
+      status: "success",
+      clientId,
+      label: clientLabel,
+      meta, // ví dụ: rows, referenceId, documentId, day, ms...
+    };
+    await fetch(logCollectUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  } catch (_) {}
+}
+
+/* ---------- NEW: Đăng ký client với backend ---------- */
+async function connectBackend() {
+  const { ingestUrl, ingestToken, shopId, autoEnabled } = await getCfg();
+  const { base, clientRegisterUrl } = deriveApiUrls(ingestUrl);
+  if (!base) throw new Error("Missing ingestUrl (Options)");
+  const { clientId, clientLabel } = await ensureIdentity();
+  const ver = chrome.runtime.getManifest().version;
+
+  const payload = {
+    clientId,
+    label: clientLabel,
+    shopId: shopId || "",
+    version: "ext-" + ver,
+    ua: navigator.userAgent,
+    autoEnabled: !!(autoEnabled ?? true),
+    connectedAt: Date.now(),
+  };
+
+  const res = await fetch(clientRegisterUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.status === 200) throw new Error(`Register ${res.status}`);
+  const j = await res.json().catch(() => ({}));
+  return { ok: true, result: j, clientId, shopId };
+}
+
 /* ===============================
-   FEATURES — Import NEW / Report ALL
+   FEATURES — Import NEW / Report ALL / ADS
    =============================== */
 async function runImportNewOrders(referenceOverride) {
   const { ingestUrl, shopId, ingestToken, refNewOrders } = await getCfg();
@@ -336,6 +406,14 @@ async function runImportNewOrders(referenceOverride) {
     ? await resp.json()
     : { ok: true, raw: await resp.text() };
 
+  // LOG success
+  await postSuccessLog("import", {
+    rows,
+    documentId,
+    referenceId,
+    backend: ingest?.ok !== false ? "ok" : "unknown",
+  });
+
   return { ok: true, rows, documentId, referenceId, ingest };
 }
 
@@ -380,6 +458,14 @@ async function runReportAllOrders(referenceOverride) {
     file: { name: `orders-all-${referenceId}.txt`, text: tsv },
   });
 
+  // LOG success
+  await postSuccessLog("report", {
+    rows,
+    documentId,
+    referenceId,
+    backend: ingest?.ok !== false ? "ok" : "unknown",
+  });
+
   return { ok: true, rows, documentId, referenceId, ingest };
 }
 
@@ -387,20 +473,16 @@ async function runReportAllOrders(referenceOverride) {
    ADS qua content-script (cookie/header y như tab Ads)
    =============================== */
 async function ensureAdsTab() {
-  // 1) tìm tab Ads
   let tabs = await chrome.tabs.query({ url: `${ADS_BASE}/*` });
   let tab;
-  if (tabs.length) {
-    tab = tabs[0];
-  } else {
-    // 2) mở tab Campaign Manager nếu chưa có
+  if (tabs.length) tab = tabs[0];
+  else {
     tab = await chrome.tabs.create({
       url: `${ADS_BASE}/cm/campaigns`,
       active: false,
     });
   }
 
-  // 3) chờ tab hoàn tất (để content-script được inject)
   if (tab.status !== "complete") {
     await new Promise((resolve) => {
       const onUpdated = (tid, info) => {
@@ -415,7 +497,6 @@ async function ensureAdsTab() {
   return tab.id;
 }
 
-// Gửi message tới ads_bridge.js; nếu chưa có thì inject rồi retry
 async function adsRetrieveViaContentScript(payload) {
   const tabId = await ensureAdsTab();
 
@@ -426,13 +507,11 @@ async function adsRetrieveViaContentScript(payload) {
       payload,
     });
 
-  // thử gửi một lần
   try {
     const r = await sendOnce();
     if (r) return r;
   } catch (_) {}
 
-  // inject bridge nếu chưa có
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -441,7 +520,6 @@ async function adsRetrieveViaContentScript(payload) {
     await new Promise((r) => setTimeout(r, 300));
   } catch (_) {}
 
-  // retry tối đa 2 lần
   for (let i = 0; i < 2; i++) {
     try {
       const r = await sendOnce();
@@ -453,9 +531,8 @@ async function adsRetrieveViaContentScript(payload) {
   throw new Error("Could not establish connection to ads_bridge.js");
 }
 
-// Wrapper: gửi qua content-script và PARSE JSON an toàn
 async function fetchAdsJsonCS(payload) {
-  const r = await adsRetrieveViaContentScript(payload); // {status, ok, text}
+  const r = await adsRetrieveViaContentScript(payload);
   if (!r) throw new Error("retrieveReport no response");
   if (!r.ok) {
     const sample =
@@ -473,7 +550,6 @@ async function fetchAdsJsonCS(payload) {
   return j;
 }
 
-// Payload cho CrossProgramCampaignReport
 function buildCampaignSpendPayload({
   startDate,
   endDate,
@@ -486,7 +562,6 @@ function buildCampaignSpendPayload({
       reportId: "CrossProgramCampaignReport",
       currencyOfView: "USD",
       endDate,
-      // KHÔNG đưa 'date' (API không hỗ trợ)
       fields: ["campaignName", "spend", "state"],
       filter: {
         and: [
@@ -507,7 +582,6 @@ function buildCampaignSpendPayload({
 
 /** Lấy mọi bản ghi theo pagination; mặc định size=300 */
 async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
-  // ---- LẦN 1: dùng fetchAdsJsonCS (đÃ parse JSON) ----
   const firstJson = await fetchAdsJsonCS(
     buildCampaignSpendPayload({
       startDate,
@@ -517,8 +591,6 @@ async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
     })
   );
 
-  // JSON thực tế: { report: { numberOfRecords, data: [...] } }
-  // (giữ fallback cho { data: { report: {...} } } nếu có môi trường khác)
   const report0 = firstJson?.report || firstJson?.data?.report || {};
   const count = report0?.numberOfRecords ?? 0;
   const rows1 = Array.isArray(report0?.data) ? report0.data : [];
@@ -542,7 +614,6 @@ async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
     all = all.concat(more);
   }
 
-  // Chuẩn hoá còn 3 cột (date = startDate vì API ko trả cột ngày)
   return all.map((r) => ({
     campaignName: r.campaignName ?? "",
     date: startDate,
@@ -550,7 +621,6 @@ async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
   }));
 }
 
-// Xuất TXT: Campaigns\tDate\tSpend
 function campaignRowsToTxt(rows) {
   const header = "Campaigns\tDate\tSpend";
   const lines = rows.map((r) =>
@@ -578,274 +648,104 @@ async function runExportAdsSpend(date) {
     file: { name: `ads-spend-${date}.txt`, text: txt },
   });
 
+  // LOG success
+  await postSuccessLog("ads", {
+    rows: rows.length,
+    day: date,
+    backend: ingestRes?.ok !== false ? "ok" : "unknown",
+  });
+
   return { ok: true, rows: rows.length, ingest: ingestRes };
 }
 
-/* ====== SOCKET.IO (Kết nối tới server realtime) ====== */
-let WS_sock = null;
-
-// === ADD: emit STATUS về server ===
-function wsStatus(phase, status, extra = {}) {
-  try {
-    WS_sock?.emit?.("STATUS", {
-      jobId: extra.jobId || "ad-hoc",
-      phase, // 'import' | 'report' | 'ads' | 'config'
-      status, // 'start' | 'success' | 'fail'
-      httpStatus: extra.httpStatus,
-      ms: extra.ms,
-      error: extra.error,
-    });
-  } catch {}
-}
-
-async function wsGetBase() {
-  // Ưu tiên wsBase; nếu không có thì lấy ingestUrl; fallback localhost
-  const s = await chrome.storage.local.get(["wsBase", "ingestUrl"]);
-  let base = (s.wsBase || s.ingestUrl || "").trim();
-  base = base.replace(/\/ext\/ingest(?:\/.*)?$/i, "").replace(/\/+$/, "");
-  if (!base) base = "https://api.lngmerch.co";
-  return base;
-}
-
-async function wsEnsureIdentity() {
-  let { clientId, clientLabel } = await chrome.storage.local.get([
-    "clientId",
-    "clientLabel",
-  ]);
-  if (!clientId) {
-    clientId =
-      "cid-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-    await chrome.storage.local.set({ clientId });
-  }
-  if (!clientLabel) {
-    clientLabel = "Machine-" + clientId.slice(-4);
-    await chrome.storage.local.set({ clientLabel });
-  }
-  return { clientId, clientLabel };
-}
-
-/* --------- AUTO SCHEDULER (5h mặc định; có thể đổi) ---------- */
-const AUTO_ALARM = "apo-auto-5h";
-const DEF_INTERVAL_MIN = 300; // 5 giờ
+/* ===============================
+   AUTO SCHEDULER — MỐC CỐ ĐỊNH 0h/4h/8h/12h/16h/20h (giờ LOCAL)
+   =============================== */
+const AUTO_ALARM = "apo-auto-fixed";
 let autoBusy = false;
 
-// === ADD: helper chạy 1 phase có log ===
-async function runStep(jobId, phase, fn) {
-  wsStatus(phase, "start", { jobId });
-  const t0 = performance.now();
-  try {
-    await fn();
-    wsStatus(phase, "success", {
-      jobId,
-      ms: Math.round(performance.now() - t0),
-    });
-    return true;
-  } catch (e) {
-    wsStatus(phase, "fail", {
-      jobId,
-      ms: Math.round(performance.now() - t0),
-      error: String(e?.message || e),
-    });
-    return false;
+/** Mốc kế tiếp (ms) theo giờ máy, base=0, every=4h */
+function nextAlignedTs(fromTs = Date.now(), baseHour = 0, everyHours = 4) {
+  const d = new Date(fromTs);
+  d.setMinutes(0, 0, 0);
+  let h = d.getHours();
+  const mod = (((h - baseHour) % everyHours) + everyHours) % everyHours;
+  if (mod !== 0 || fromTs > d.getTime()) {
+    h = h + (everyHours - mod);
+    d.setHours(h, 0, 0, 0);
   }
+  if (d.getTime() <= fromTs) d.setHours(d.getHours() + everyHours, 0, 0, 0);
+  return d.getTime();
 }
 
-// Thay thế hoàn toàn hàm runAutoJob:
-async function runAutoJob(reason = "alarm", jobId) {
+/** Đặt alarm one-shot tới mốc kế tiếp */
+async function scheduleNextAnchor() {
+  await chrome.alarms.clear(AUTO_ALARM);
+  const when = nextAlignedTs(Date.now(), 0, 4);
+  chrome.alarms.create(AUTO_ALARM, { when });
+  log("[AUTO] next tick at", new Date(when).toLocaleString());
+}
+
+/** Bật/tắt auto theo mốc cố định */
+async function scheduleAutoRun(enable = true) {
+  await chrome.alarms.clear(AUTO_ALARM);
+  await chrome.storage.local.set({ autoEnabled: enable });
+
+  if (!enable) {
+    log("[AUTO] disabled");
+    return { ok: true, enabled: false };
+  }
+  await scheduleNextAnchor();
+  return {
+    ok: true,
+    enabled: true,
+    schedule: "00:00 | 04:00 | 08:00 | 12:00 | 16:00 | 20:00",
+  };
+}
+
+// chạy job; không throw ra ngoài để còn reschedule
+async function runAutoJob(reason = "alarm") {
   if (autoBusy) {
     console.log("[AUTO] skip, job is running");
-    wsStatus("config", "fail", { jobId, error: "busy" }); // log nhẹ nếu trùng
     return { ok: false, message: "busy" };
   }
   autoBusy = true;
   const tStart = Date.now();
-  console.log("[AUTO] start", { reason, jobId });
+  console.log("[AUTO] start", { reason });
 
   try {
-    // Luôn chạy lần lượt: import -> report -> ads
-    const importOk = await runStep(jobId, "import", () =>
-      runImportNewOrders(undefined)
-    );
-    const reportOk = await runStep(jobId, "report", () =>
-      runReportAllOrders(undefined)
-    );
+    try {
+      await runImportNewOrders(undefined);
+    } catch (e) {
+      console.warn("[AUTO] import failed:", e?.message || e);
+    }
 
-    const today = new Date().toISOString().slice(0, 10);
-    const adsOk = await runStep(jobId, "ads", () => runExportAdsSpend(today));
+    try {
+      await runReportAllOrders(undefined);
+    } catch (e) {
+      console.warn("[AUTO] report failed:", e?.message || e);
+    }
 
-    // Hoàn tất job: ok = đã chạy xong cả ba bước (không đồng nghĩa tất cả success)
-    return {
-      ok: true,
-      ms: Date.now() - tStart,
-      results: { import: importOk, report: reportOk, ads: adsOk },
-    };
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      await runExportAdsSpend(today);
+    } catch (e) {
+      console.warn("[AUTO] ads failed:", e?.message || e);
+    }
+
+    return { ok: true, ms: Date.now() - tStart };
   } finally {
     autoBusy = false;
   }
 }
 
-async function scheduleAutoRun(enable = true, minutes = DEF_INTERVAL_MIN) {
-  await chrome.alarms.clear(AUTO_ALARM);
-  await chrome.alarms.clear(AUTO_ALARM + "-kick");
-  minutes = Math.max(1, minutes | 0);
-
-  await chrome.storage.local.set({
-    autoEnabled: enable,
-    autoIntervalMin: minutes,
-  });
-
-  if (!enable) {
-    console.log("[AUTO] disabled");
-    return { ok: true, enabled: false };
-  }
-
-  chrome.alarms.create(AUTO_ALARM, { periodInMinutes: minutes });
-  // Kick 1 phát sau 10s để chạy ngay khi bật (có thể bỏ nếu không muốn)
-  chrome.alarms.create(AUTO_ALARM + "-kick", { when: Date.now() + 10 * 1000 });
-
-  console.log("[AUTO] scheduled every", minutes, "minutes");
-  return { ok: true, enabled: true, minutes };
-}
-
+/* Alarm handler: chạy job xong là lên lịch mốc kế tiếp */
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === AUTO_ALARM || alarm.name === AUTO_ALARM + "-kick") {
-    await runAutoJob("alarm:" + alarm.name);
+  if (alarm.name === AUTO_ALARM) {
+    await runAutoJob("alarm");
+    await scheduleNextAnchor();
   }
 });
-
-chrome.runtime.onInstalled.addListener(async () => {
-  const st = await chrome.storage.local.get(["autoEnabled", "autoIntervalMin"]);
-  await scheduleAutoRun(
-    st.autoEnabled ?? true,
-    st.autoIntervalMin ?? DEF_INTERVAL_MIN
-  );
-});
-chrome.runtime.onStartup.addListener(async () => {
-  const st = await chrome.storage.local.get(["autoEnabled", "autoIntervalMin"]);
-  if (st.autoEnabled ?? true) {
-    await scheduleAutoRun(true, st.autoIntervalMin ?? DEF_INTERVAL_MIN);
-  }
-});
-
-/* --------- Backend-controlled config via WS ---------- */
-function applySyncConfig(cfg) {
-  let minutes = DEF_INTERVAL_MIN;
-  if (typeof cfg?.intervalMin === "number")
-    minutes = Math.max(1, cfg.intervalMin | 0);
-  if (typeof cfg?.intervalMs === "number")
-    minutes = Math.max(1, Math.round(cfg.intervalMs / 60000));
-
-  scheduleAutoRun(cfg?.enabled !== false, minutes)
-    .then((r) => {
-      console.log("[WS] SYNC_CONFIG applied →", r);
-      try {
-        WS_sock?.emit?.("STATUS", {
-          jobId: "cfg-" + Date.now(),
-          phase: "config",
-          status: "success",
-          ms: 0,
-        });
-      } catch {}
-    })
-    .catch((e) => {
-      console.warn("[WS] SYNC_CONFIG error", e);
-      try {
-        WS_sock?.emit?.("STATUS", {
-          jobId: "cfg-" + Date.now(),
-          phase: "config",
-          status: "fail",
-          error: String(e),
-        });
-      } catch {}
-    });
-}
-
-async function wsConnect() {
-  if (WS_sock?.connected) return { ok: true, already: true };
-
-  const base = await wsGetBase();
-  const { clientId, clientLabel } = await wsEnsureIdentity();
-  const ver = chrome.runtime.getManifest().version;
-
-  WS_sock = WSIO(base, {
-    path: "/socket",
-    transports: ["websocket"],
-    reconnection: true,
-    reconnectionAttempts: Infinity,
-    reconnectionDelayMax: 30000,
-  });
-
-  WS_sock.on("connect", () => {
-    console.log("[WS] connected →", base);
-    WS_sock.emit("HELLO", {
-      clientId,
-      label: clientLabel,
-      version: "ext-" + ver,
-    });
-    chrome.runtime
-      .sendMessage({ type: "WS_EVENT", event: "CONNECT", base })
-      .catch(() => {});
-  });
-
-  WS_sock.on("connect_error", (err) => {
-    console.warn("[WS] connect_error", err?.message || err);
-    chrome.runtime
-      .sendMessage({
-        type: "WS_EVENT",
-        event: "CONNECT_ERROR",
-        error: String(err?.message || err),
-      })
-      .catch(() => {});
-  });
-
-  WS_sock.on("disconnect", (reason) => {
-    console.warn("[WS] disconnect", reason);
-    chrome.runtime
-      .sendMessage({ type: "WS_EVENT", event: "DISCONNECT", reason })
-      .catch(() => {});
-  });
-
-  // === Realtime commands ===
-  WS_sock.on("RUN_JOB", ({ jobId, reason }) => {
-    // tương thích lệnh cũ (ack + log). RUN_NOW mới là lệnh chạy thật.
-    console.log("[WS] RUN_JOB", jobId, reason);
-    try {
-      WS_sock.emit("ACK", { jobId });
-    } catch {}
-    chrome.runtime
-      .sendMessage({
-        type: "WS_EVENT",
-        event: "RUN_JOB",
-        payload: { jobId, reason },
-      })
-      .catch(() => {});
-  });
-
-  WS_sock.on("SYNC_CONFIG", (payload) => {
-    console.log("[WS] SYNC_CONFIG", payload);
-    applySyncConfig(payload);
-  });
-
-  WS_sock.on("RUN_NOW", async (payload) => {
-    console.log("[WS] RUN_NOW", payload);
-    try {
-      WS_sock.emit("ACK", { jobId: payload?.jobId || "run-" + Date.now() });
-    } catch {}
-    await runAutoJob("remote", payload?.jobId); // ← TRUYỀN jobId
-  });
-
-  return { ok: true, base };
-}
-
-function wsDisconnect() {
-  try {
-    WS_sock?.disconnect();
-    WS_sock = null;
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, message: String(e) };
-  }
-}
 
 /* ===============================
    Bridge cho Options / DevTools
@@ -855,7 +755,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     try {
       if (msg.type === "PING") return sendResponse({ ok: true });
 
-      // chạy tay 3 bước
+      // Manual run
       if (msg.type === "RUN_IMPORT_NEW")
         return sendResponse(await runImportNewOrders(msg.payload?.referenceId));
       if (msg.type === "RUN_REPORT_ALL")
@@ -863,17 +763,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.type === "RUN_ADS_SPEND")
         return sendResponse(await runExportAdsSpend(msg.payload?.date));
 
-      // WebSocket connect/disconnect
-      if (msg.type === "WS_CONNECT") return sendResponse(await wsConnect());
-      if (msg.type === "WS_DISCONNECT") return sendResponse(wsDisconnect());
-
-      // Scheduler control từ Options/devtools
+      // Auto on/off (mốc cố định)
+      if (msg.type === "AUTO_ENABLE")
+        return sendResponse(await scheduleAutoRun(true));
+      if (msg.type === "AUTO_DISABLE")
+        return sendResponse(await scheduleAutoRun(false));
       if (msg.type === "AUTO_SET")
-        return sendResponse(
-          await scheduleAutoRun(!!msg.enabled, msg.minutes ?? DEF_INTERVAL_MIN)
-        );
+        return sendResponse(await scheduleAutoRun(!!msg.enabled)); // vẫn hỗ trợ cũ
+
       if (msg.type === "AUTO_RUN_NOW")
         return sendResponse(await runAutoJob("manual"));
+
+      // NEW: đăng ký client với backend
+      if (msg.type === "BACKEND_CONNECT")
+        return sendResponse(await connectBackend());
 
       sendResponse({ ok: false, message: "Unknown command" });
     } catch (e) {
@@ -881,4 +784,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
   })();
   return true;
+});
+
+/* ---------- Lifecycle ---------- */
+chrome.runtime.onInstalled.addListener(async () => {
+  const st = await chrome.storage.local.get(["autoEnabled"]);
+  await ensureIdentity();
+  await scheduleAutoRun(st.autoEnabled ?? true); // mặc định bật
+});
+chrome.runtime.onStartup.addListener(async () => {
+  const st = await chrome.storage.local.get(["autoEnabled"]);
+  await ensureIdentity();
+  if (st.autoEnabled ?? true) {
+    await scheduleNextAnchor();
+  } else {
+    await chrome.alarms.clear(AUTO_ALARM);
+  }
 });

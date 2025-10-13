@@ -1,4 +1,4 @@
-// options.js — APO LNG (khớp background tự request referenceId)
+// options.js — APO LNG (khớp background chạy theo mốc 0/4/8/12/16/20, không dùng WS)
 
 const $ = (s) => document.querySelector(s);
 const log = (...a) => {
@@ -20,13 +20,11 @@ function normalizeBaseUrl(u) {
   return s;
 }
 function deriveApiUrls(base) {
-  if (!base)
-    return { importNewUrl: "", reportAllUrl: "", adsSpendUrl: "", wsUrl: "" };
+  if (!base) return { importNewUrl: "", reportAllUrl: "", adsSpendUrl: "" };
   return {
     importNewUrl: `${base}/ext/import-new-orders`,
     reportAllUrl: `${base}/ext/report-all-orders`,
     adsSpendUrl: `${base}/ext/ads-spend`,
-    wsUrl: `${base}/ws`,
   };
 }
 function setTodayDefault() {
@@ -41,13 +39,7 @@ function setTodayDefault() {
 function previewEndpoints() {
   const raw = $("#ingestUrl").value.trim();
   const base = normalizeBaseUrl(raw);
-  const { importNewUrl, reportAllUrl, adsSpendUrl, wsUrl } =
-    deriveApiUrls(base);
-
-  if ($("#wsNote"))
-    $("#wsNote").value = base
-      ? `WS: ${wsUrl}`
-      : "Suy ra từ API Base URL: {host}/ws";
+  const { importNewUrl, reportAllUrl, adsSpendUrl } = deriveApiUrls(base);
 
   const lines = [];
   if (base) {
@@ -55,6 +47,9 @@ function previewEndpoints() {
     lines.push(`• ${importNewUrl}`);
     lines.push(`• ${reportAllUrl}`);
     lines.push(`• ${adsSpendUrl}`);
+    lines.push(
+      "⏱ Auto schedule: 00:00 | 04:00 | 08:00 | 12:00 | 16:00 | 20:00"
+    );
   } else {
     lines.push("⚠️ Nhập API Base URL (ví dụ: https://api.lngmerch.co)");
   }
@@ -74,6 +69,8 @@ function previewEndpoints() {
     // NEW
     "adsCsrfData",
     "adsCsrfToken",
+    // auto
+    "autoEnabled",
   ]);
   if (st.ingestUrl) $("#ingestUrl").value = st.ingestUrl;
   if (st.ingestToken) $("#ingestToken").value = st.ingestToken;
@@ -88,6 +85,12 @@ function previewEndpoints() {
   // NEW: CSRF Data/Token
   if (st.adsCsrfData) $("#adsCsrfData").value = st.adsCsrfData;
   if (st.adsCsrfToken) $("#adsCsrfToken").value = st.adsCsrfToken;
+
+  // Auto status
+  if ($("#autoStatus")) {
+    $("#autoStatus").textContent =
+      st.autoEnabled ?? true ? "Auto: ENABLED" : "Auto: DISABLED";
+  }
 
   setTodayDefault();
   previewEndpoints();
@@ -150,7 +153,7 @@ $("#testImport").onclick = async () => {
     const res = await chrome.runtime.sendMessage({ type: "RUN_IMPORT_NEW" });
     log(res);
   } catch (e) {
-    log("❌ " + e.message);
+    log("❌ " + (e.message || e));
   }
 };
 
@@ -160,7 +163,7 @@ $("#testReport").onclick = async () => {
     const res = await chrome.runtime.sendMessage({ type: "RUN_REPORT_ALL" });
     log(res);
   } catch (e) {
-    log("❌ " + e.message);
+    log("❌ " + (e.message || e));
   }
 };
 
@@ -175,39 +178,75 @@ $("#testAds").onclick = async () => {
     });
     log(res);
   } catch (e) {
-    log("❌ " + e.message);
+    log("❌ " + (e.message || e));
   }
 };
 
-// Kết nối WS: lấy base từ ingestUrl đang nhập/lưu
-document.getElementById("testWS").onclick = async () => {
-  // Lưu ingestUrl hiện tại (nếu bạn đang thay đổi)
-  const base = normalizeBaseUrl(
-    document.getElementById("ingestUrl").value.trim()
-  );
-  if (base) await chrome.storage.local.set({ ingestUrl: base });
+// ===== NEW: Connect backend (đăng ký client) =====
+const btnConnect = $("#btnConnect");
+if (btnConnect) {
+  btnConnect.onclick = async () => {
+    // đảm bảo base URL vừa nhập được lưu trước khi connect
+    const base = normalizeBaseUrl($("#ingestUrl").value.trim());
+    if (base) await chrome.storage.local.set({ ingestUrl: base });
 
-  document.getElementById("log").textContent = "Connecting WS...";
-  try {
-    const r = await chrome.runtime.sendMessage({ type: "WS_CONNECT" });
-    log("WS_CONNECT → " + JSON.stringify(r));
-  } catch (e) {
-    log("❌ WS_CONNECT error: " + (e.message || e));
-  }
-};
+    $("#log").textContent = "Connecting to backend...";
+    try {
+      const r = await chrome.runtime.sendMessage({ type: "BACKEND_CONNECT" });
+      if (r?.ok) {
+        log("✅ BACKEND_CONNECT → " + JSON.stringify(r));
+      } else {
+        log("❌ BACKEND_CONNECT failed → " + JSON.stringify(r || {}));
+      }
+    } catch (e) {
+      log("❌ BACKEND_CONNECT error: " + (e.message || e));
+    }
+  };
+}
 
-// Nhận log/evt từ background và in ra Options
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.type === "WS_EVENT") {
-    const line =
-      `[WS ${msg.event}] ` +
-      (msg.error || JSON.stringify(msg.payload || msg.base || ""));
-    log(line);
-  }
-});
+// ===== NEW: Auto controls (enable/disable/run-now) =====
+const btnAutoEnable = $("#btnAutoEnable");
+if (btnAutoEnable) {
+  btnAutoEnable.onclick = async () => {
+    $("#log").textContent = "Enabling auto schedule (fixed anchors)...";
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "AUTO_ENABLE" });
+      log(res);
+      $("#autoStatus") && ($("#autoStatus").textContent = "Auto: ENABLED");
+    } catch (e) {
+      log("❌ " + (e.message || e));
+    }
+  };
+}
+const btnAutoDisable = $("#btnAutoDisable");
+if (btnAutoDisable) {
+  btnAutoDisable.onclick = async () => {
+    $("#log").textContent = "Disabling auto schedule...";
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "AUTO_DISABLE" });
+      log(res);
+      $("#autoStatus") && ($("#autoStatus").textContent = "Auto: DISABLED");
+    } catch (e) {
+      log("❌ " + (e.message || e));
+    }
+  };
+}
+// Tuỳ chọn: chạy ngay một job đủ 3 bước
+const btnAutoRunNow = $("#btnAutoRunNow");
+if (btnAutoRunNow) {
+  btnAutoRunNow.onclick = async () => {
+    $("#log").textContent = "Run job now...";
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "AUTO_RUN_NOW" });
+      log(res);
+    } catch (e) {
+      log("❌ " + (e.message || e));
+    }
+  };
+}
 
 // ===== Open Service Worker console =====
-document.getElementById("openSW").onclick = () => {
+$("#openSW").onclick = () => {
   alert(
     "Mở log SW: chrome://extensions → bật Developer mode → Service worker (Inspect)."
   );
