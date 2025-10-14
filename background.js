@@ -1,11 +1,10 @@
 /* ===============================
    background.js (MV3) — APO LNG (No Socket.IO)
-   - Import NEW / Report ALL / Ads (giữ nguyên logic gọi Amazon)
-   - Lịch tự động theo mốc cố định: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 (giờ LOCAL)
-   - Không Socket.IO
-   - Gửi log THÀNH CÔNG về backend: POST /api/logs/collect
-   - NEW: BACKEND_CONNECT -> POST /api/clients/register (shopId + clientId)
-   - NEW: AUTO_ENABLE / AUTO_DISABLE để bật/tắt auto import
+   - Import NEW / Report ALL / Ads (gọi Amazon như cũ)
+   - Lịch cố định: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 (giờ LOCAL)
+   - Gửi LOG TỔNG khi AUTO/CLICK: POST /api/logs/ext/log
+   - Đăng ký client thủ công: POST /api/shop/ext/connect (qua BACKEND_CONNECT)
+   - Bật/tắt auto: AUTO_ENABLE / AUTO_DISABLE / AUTO_SET
    =============================== */
 
 const log = (...args) => console.log("[APO]", ...args);
@@ -95,7 +94,7 @@ function deriveApiUrls(ingestUrl) {
   };
 }
 
-/* ---------- Identity (gắn vào log / đăng ký client) ---------- */
+/* ---------- Identity ---------- */
 async function ensureIdentity() {
   let { clientId, clientLabel } = await chrome.storage.local.get([
     "clientId",
@@ -258,13 +257,10 @@ async function postFileTo(url, fields) {
   const { ingestToken } = await getCfg();
   const fd = new FormData();
 
-  // append các key primitive (trừ file/filename)
   for (const [k, v] of Object.entries(fields || {})) {
     if (k === "file" || k === "filename") continue;
     if (v !== undefined && v !== null) fd.append(k, String(v));
   }
-
-  // file
   if (typeof fields.file === "string") {
     const name = fields.filename || "file.txt";
     fd.append("file", new Blob([fields.file], { type: "text/plain" }), name);
@@ -291,32 +287,47 @@ async function postFileTo(url, fields) {
     : { ok: true, raw: await res.text() };
 }
 
-/* ---------- Simple success LOG (HTTP) ---------- */
-async function postSuccessLog(phase, meta = {}) {
+/* ---------- Gửi LOG TỔNG (AUTO/CLICK) ---------- */
+async function postRunLog({ trigger, phases, extraMeta = {} }) {
   try {
-    const { ingestUrl } = await getCfg();
+    const { ingestUrl, ingestToken, shopId } = await getCfg();
     const { base, logCollectUrl } = deriveApiUrls(ingestUrl);
-    if (!base) return;
+    if (!base) {
+      console.warn("[APO] No ingestUrl → skip log");
+      return;
+    }
     const { clientId, clientLabel } = await ensureIdentity();
+
     const payload = {
-      ts: Date.now(),
-      phase, // 'import' | 'report' | 'ads'
-      status: "success",
+      trigger, // 'AUTO' | 'CLICK'
+      shopId: shopId || null, // để backend populate sang Shop
       clientId,
       label: clientLabel,
-      meta, // ví dụ: rows, referenceId, documentId, day, ms...
+      phases, // [{type:'import'|'report'|'ads', status:'success'|'fail'}]
+      meta: extraMeta,
     };
-    await fetch(logCollectUrl, {
+
+    const res = await fetch(logCollectUrl, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "x-access-token": ingestToken || "",
+      },
       body: JSON.stringify(payload),
-    }).catch(() => {});
-  } catch (_) {}
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      console.error("[APO] postRunLog failed", res.status, txt.slice(0, 200));
+    }
+  } catch (e) {
+    console.error("[APO] postRunLog error:", e?.message || e);
+  }
 }
 
-/* ---------- NEW: Đăng ký client với backend ---------- */
+/* ---------- Đăng ký client (thủ công) ---------- */
 async function connectBackend() {
-  const { ingestUrl, ingestToken, shopId, autoEnabled } = await getCfg();
+  const { ingestUrl, shopId, autoEnabled } = await getCfg();
   const { base, clientRegisterUrl } = deriveApiUrls(ingestUrl);
   if (!base) throw new Error("Missing ingestUrl (Options)");
   const { clientId, clientLabel } = await ensureIdentity();
@@ -334,14 +345,13 @@ async function connectBackend() {
 
   const res = await fetch(clientRegisterUrl, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.status === 200) throw new Error(`Register ${res.status}`);
+  if (res.status !== 200 && res.status !== 201)
+    throw new Error(`Register ${res.status}`);
   const j = await res.json().catch(() => ({}));
-  return { ok: true, result: j, clientId, shopId };
+  return { ok: true, result: j };
 }
 
 /* ===============================
@@ -352,7 +362,6 @@ async function runImportNewOrders(referenceOverride) {
   if (!ingestUrl) throw new Error("Missing ingestUrl (Options)");
   const { importNewUrl } = deriveApiUrls(ingestUrl);
 
-  // 1) ref
   let referenceId = referenceOverride;
   if (!referenceId) {
     try {
@@ -364,13 +373,11 @@ async function runImportNewOrders(referenceOverride) {
   }
   if (!referenceId) throw new Error("No referenceId found for NEW orders.");
 
-  // 2) poll
   const st = await pollUntilReady(referenceId, {
     intervalMs: 10000,
     maxAttempts: 5,
   });
 
-  // 3) tsv
   let tsv,
     documentId = null,
     rows = 0;
@@ -384,7 +391,6 @@ async function runImportNewOrders(referenceOverride) {
     rows = r.rows;
   }
 
-  // 4) push
   const fd = new FormData();
   if (shopId) fd.append("shopId", shopId);
   fd.append(
@@ -405,14 +411,6 @@ async function runImportNewOrders(referenceOverride) {
     .includes("application/json")
     ? await resp.json()
     : { ok: true, raw: await resp.text() };
-
-  // LOG success
-  await postSuccessLog("import", {
-    rows,
-    documentId,
-    referenceId,
-    backend: ingest?.ok !== false ? "ok" : "unknown",
-  });
 
   return { ok: true, rows, documentId, referenceId, ingest };
 }
@@ -458,19 +456,11 @@ async function runReportAllOrders(referenceOverride) {
     file: { name: `orders-all-${referenceId}.txt`, text: tsv },
   });
 
-  // LOG success
-  await postSuccessLog("report", {
-    rows,
-    documentId,
-    referenceId,
-    backend: ingest?.ok !== false ? "ok" : "unknown",
-  });
-
   return { ok: true, rows, documentId, referenceId, ingest };
 }
 
 /* ===============================
-   ADS qua content-script (cookie/header y như tab Ads)
+   ADS via content-script
    =============================== */
 async function ensureAdsTab() {
   let tabs = await chrome.tabs.query({ url: `${ADS_BASE}/*` });
@@ -482,7 +472,6 @@ async function ensureAdsTab() {
       active: false,
     });
   }
-
   if (tab.status !== "complete") {
     await new Promise((resolve) => {
       const onUpdated = (tid, info) => {
@@ -499,7 +488,6 @@ async function ensureAdsTab() {
 
 async function adsRetrieveViaContentScript(payload) {
   const tabId = await ensureAdsTab();
-
   const sendOnce = () =>
     chrome.tabs.sendMessage(tabId, {
       type: "ADS_FETCH_REPORT",
@@ -580,7 +568,6 @@ function buildCampaignSpendPayload({
   };
 }
 
-/** Lấy mọi bản ghi theo pagination; mặc định size=300 */
 async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
   const firstJson = await fetchAdsJsonCS(
     buildCampaignSpendPayload({
@@ -648,23 +635,15 @@ async function runExportAdsSpend(date) {
     file: { name: `ads-spend-${date}.txt`, text: txt },
   });
 
-  // LOG success
-  await postSuccessLog("ads", {
-    rows: rows.length,
-    day: date,
-    backend: ingestRes?.ok !== false ? "ok" : "unknown",
-  });
-
   return { ok: true, rows: rows.length, ingest: ingestRes };
 }
 
 /* ===============================
-   AUTO SCHEDULER — MỐC CỐ ĐỊNH 0h/4h/8h/12h/16h/20h (giờ LOCAL)
+   AUTO SCHEDULER — 0h/4h/8h/12h/16h/20h (LOCAL)
    =============================== */
 const AUTO_ALARM = "apo-auto-fixed";
 let autoBusy = false;
 
-/** Mốc kế tiếp (ms) theo giờ máy, base=0, every=4h */
 function nextAlignedTs(fromTs = Date.now(), baseHour = 0, everyHours = 4) {
   const d = new Date(fromTs);
   d.setMinutes(0, 0, 0);
@@ -678,7 +657,6 @@ function nextAlignedTs(fromTs = Date.now(), baseHour = 0, everyHours = 4) {
   return d.getTime();
 }
 
-/** Đặt alarm one-shot tới mốc kế tiếp */
 async function scheduleNextAnchor() {
   await chrome.alarms.clear(AUTO_ALARM);
   const when = nextAlignedTs(Date.now(), 0, 4);
@@ -686,7 +664,6 @@ async function scheduleNextAnchor() {
   log("[AUTO] next tick at", new Date(when).toLocaleString());
 }
 
-/** Bật/tắt auto theo mốc cố định */
 async function scheduleAutoRun(enable = true) {
   await chrome.alarms.clear(AUTO_ALARM);
   await chrome.storage.local.set({ autoEnabled: enable });
@@ -703,46 +680,56 @@ async function scheduleAutoRun(enable = true) {
   };
 }
 
-// chạy job; không throw ra ngoài để còn reschedule
-async function runAutoJob(reason = "alarm") {
+// chạy đủ 3 bước và GỬI LOG TỔNG
+async function runFullFlowAndLog(trigger = "AUTO") {
+  const phases = [];
+  try {
+    await runImportNewOrders(undefined);
+    phases.push({ type: "import", status: "success" });
+  } catch {
+    phases.push({ type: "import", status: "fail" });
+  }
+
+  try {
+    await runReportAllOrders(undefined);
+    phases.push({ type: "report", status: "success" });
+  } catch {
+    phases.push({ type: "report", status: "fail" });
+  }
+
+  try {
+    const now = new Date();
+    const vnOffset = 7 * 60; // phút GMT+7
+    const local = new Date(
+      now.getTime() + (vnOffset + now.getTimezoneOffset()) * 60000
+    );
+    const todayVN = local.toISOString().slice(0, 10);
+    await runExportAdsSpend(todayVN);
+    phases.push({ type: "ads", status: "success" });
+  } catch {
+    phases.push({ type: "ads", status: "fail" });
+  }
+
+  await postRunLog({ trigger, phases });
+  return { ok: true, phases };
+}
+
+async function runAutoJob() {
   if (autoBusy) {
     console.log("[AUTO] skip, job is running");
     return { ok: false, message: "busy" };
   }
   autoBusy = true;
-  const tStart = Date.now();
-  console.log("[AUTO] start", { reason });
-
   try {
-    try {
-      await runImportNewOrders(undefined);
-    } catch (e) {
-      console.warn("[AUTO] import failed:", e?.message || e);
-    }
-
-    try {
-      await runReportAllOrders(undefined);
-    } catch (e) {
-      console.warn("[AUTO] report failed:", e?.message || e);
-    }
-
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      await runExportAdsSpend(today);
-    } catch (e) {
-      console.warn("[AUTO] ads failed:", e?.message || e);
-    }
-
-    return { ok: true, ms: Date.now() - tStart };
+    return await runFullFlowAndLog("AUTO");
   } finally {
     autoBusy = false;
   }
 }
 
-/* Alarm handler: chạy job xong là lên lịch mốc kế tiếp */
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === AUTO_ALARM) {
-    await runAutoJob("alarm");
+    await runAutoJob();
     await scheduleNextAnchor();
   }
 });
@@ -755,7 +742,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     try {
       if (msg.type === "PING") return sendResponse({ ok: true });
 
-      // Manual run
+      // Manual single steps (không gửi log tổng)
       if (msg.type === "RUN_IMPORT_NEW")
         return sendResponse(await runImportNewOrders(msg.payload?.referenceId));
       if (msg.type === "RUN_REPORT_ALL")
@@ -763,18 +750,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.type === "RUN_ADS_SPEND")
         return sendResponse(await runExportAdsSpend(msg.payload?.date));
 
-      // Auto on/off (mốc cố định)
+      // Manual full flow (CLICK) + log tổng
+      if (msg.type === "AUTO_RUN_NOW")
+        return sendResponse(await runFullFlowAndLog("CLICK"));
+
+      // Auto on/off
       if (msg.type === "AUTO_ENABLE")
         return sendResponse(await scheduleAutoRun(true));
       if (msg.type === "AUTO_DISABLE")
         return sendResponse(await scheduleAutoRun(false));
       if (msg.type === "AUTO_SET")
-        return sendResponse(await scheduleAutoRun(!!msg.enabled)); // vẫn hỗ trợ cũ
+        return sendResponse(await scheduleAutoRun(!!msg.enabled));
 
-      if (msg.type === "AUTO_RUN_NOW")
-        return sendResponse(await runAutoJob("manual"));
-
-      // NEW: đăng ký client với backend
+      // Đăng ký client (thủ công từ Options)
       if (msg.type === "BACKEND_CONNECT")
         return sendResponse(await connectBackend());
 
@@ -789,12 +777,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 /* ---------- Lifecycle ---------- */
 chrome.runtime.onInstalled.addListener(async () => {
   const st = await chrome.storage.local.get(["autoEnabled"]);
-  await ensureIdentity();
+  await ensureIdentity(); // chỉ tạo clientId/label cục bộ
   await scheduleAutoRun(st.autoEnabled ?? true); // mặc định bật
 });
 chrome.runtime.onStartup.addListener(async () => {
   const st = await chrome.storage.local.get(["autoEnabled"]);
-  await ensureIdentity();
+  await ensureIdentity(); // chỉ ensure id
   if (st.autoEnabled ?? true) {
     await scheduleNextAnchor();
   } else {
