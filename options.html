@@ -55,10 +55,11 @@
       }
       h2 {
         margin: 0;
-        font-size: 2.2em;
-        font-weight: 300;
+        font-size: 2em;
+        font-weight: 400;
         letter-spacing: -0.5px;
       }
+
       .content {
         padding: 15px;
         flex: 1;
@@ -81,6 +82,7 @@
         transform: translateY(-2px);
         box-shadow: 0 12px 35px rgba(0, 0, 0, 0.12);
       }
+
       label {
         display: block;
         margin: 8px 0 4px;
@@ -117,6 +119,7 @@
         margin-top: 6px;
         line-height: 1.3;
       }
+
       button {
         margin: 4px 2px;
         padding: 12px 20px;
@@ -158,6 +161,7 @@
         transform: translateY(-2px);
         box-shadow: 0 8px 20px rgba(46, 204, 113, 0.3);
       }
+
       button[id^="test"] {
         background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
         color: #fff;
@@ -171,10 +175,7 @@
         background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%);
         color: #fff;
       }
-      #openSW:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 20px rgba(155, 89, 182, 0.3);
-      }
+
       .row {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -186,6 +187,7 @@
         gap: 8px;
         margin: 8px 0;
       }
+
       .ok {
         color: #2ecc71;
         margin-top: 15px;
@@ -204,18 +206,19 @@
         font-family: "Monaco", "Menlo", monospace;
         font-size: 13px;
         line-height: 1.4;
-        max-height: 120px;
+        max-height: 140px;
         overflow-y: auto;
         box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.2);
       }
+
       .config-section {
         border-left: 4px solid #667eea;
       }
-      .test-section {
-        border-left: 4px solid #f39c12;
-      }
       .control-section {
         border-left: 4px solid #27ae60;
+      }
+      .test-section {
+        border-left: 4px solid #f39c12;
       }
       .section-title {
         font-size: 1.1em;
@@ -225,6 +228,21 @@
         padding-bottom: 5px;
         border-bottom: 2px solid #ecf0f1;
       }
+      .muted {
+        color: #6c757d;
+        font-size: 13px;
+      }
+
+      .badge {
+        display: inline-block;
+        padding: 4px 8px;
+        background: #eef2ff;
+        color: #1d4ed8;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
       @media (max-width: 768px) {
         .row {
           grid-template-columns: 1fr;
@@ -256,6 +274,11 @@
           transform: none;
         }
       }
+
+      /* Ẩn block Ads inputs cũ để tương thích options.js nhưng không lộ UI */
+      .hidden {
+        display: none !important;
+      }
     </style>
   </head>
   <body>
@@ -273,91 +296,28 @@
             <div>
               <label for="ingestUrl">🌐 API Base URL</label>
               <input id="ingestUrl" placeholder="https://api.lngmerch.co" />
+              <small class="helper">VD: https://api.lngmerch.co</small>
             </div>
             <div>
-              <label for="ingestToken">🔑 Ingest Token (tùy chọn)</label>
+              <label for="ingestToken">🔑 Ingest Token (tuỳ chọn)</label>
               <input id="ingestToken" placeholder="x-access-token" />
+              <small class="helper">Để trống nếu backend không yêu cầu.</small>
             </div>
           </div>
 
           <div class="row">
             <div>
-              <label for="shopId">🏪 Shop ID (Seller ID)</label>
-              <input id="shopId" placeholder="A3XXXXXXX..." />
+              <label for="shopId">🏪 Shop ID (ObjectId hoặc Seller ID)</label>
+              <input id="shopId" placeholder="64f... hoặc A3XXXX..." />
+              <small class="helper"
+                >Dùng để map log/ingest với đúng shop.</small
+              >
             </div>
-            <div style="display: flex; align-items: flex-end; gap: 8px">
+            <div>
+              <label for="shopId">🔌 Connect backend</label>
               <button id="btnConnect" title="Đăng ký client lên backend">
                 🔌 Connect backend
               </button>
-            </div>
-          </div>
-
-          <!-- Amazon Ads credentials -->
-          <div class="section-title" style="margin-top: 14px">
-            📣 Amazon Ads Credentials
-          </div>
-
-          <div class="row">
-            <div>
-              <label for="adsAccountId">Amazon-Ads-Account-Id</label>
-              <input id="adsAccountId" placeholder="amzn1.ads-account.g:..." />
-              <small class="helper"
-                >Copy từ Network tab (header
-                <b>Amazon-Ads-Account-Id</b>).</small
-              >
-            </div>
-            <div>
-              <label for="adsAdvertiserId"
-                >Amazon-Advertising-Api-Advertiserid</label
-              >
-              <input id="adsAdvertiserId" placeholder="ENTITY3DY1AAFKL1HQF" />
-              <small class="helper"
-                >Header <b>Amazon-Advertising-Api-Advertiserid</b>.</small
-              >
-            </div>
-          </div>
-
-          <div class="row">
-            <div>
-              <label for="adsClientId">Amazon-Advertising-Api-Clientid</label>
-              <input id="adsClientId" placeholder="amzn.advertising.xxxxx" />
-              <small class="helper"
-                >Header <b>Amazon-Advertising-Api-Clientid</b>.</small
-              >
-            </div>
-            <div>
-              <label for="adsMarketplaceId"
-                >Amazon-Advertising-Api-Marketplaceid</label
-              >
-              <input id="adsMarketplaceId" placeholder="ATVPDKIKX0DER" />
-              <small class="helper"
-                >Marketplace (US: <b>ATVPDKIKX0DER</b>).</small
-              >
-            </div>
-          </div>
-
-          <div class="row">
-            <div>
-              <label for="adsCsrfData">Amazon-Advertising-Api-Csrf-Data</label>
-              <input
-                id="adsCsrfData"
-                placeholder="amzn.advertising.csrf.data..."
-              />
-              <small class="helper"
-                >Header <b>Amazon-Advertising-Api-Csrf-Data</b>.</small
-              >
-            </div>
-            <div>
-              <label for="adsCsrfToken"
-                >Amazon-Advertising-Api-Csrf-Token</label
-              >
-              <input
-                id="adsCsrfToken"
-                placeholder="amzn.advertising.csrf.token..."
-              />
-              <small class="helper"
-                >Header <b>Amazon-Advertising-Api-Csrf-Token</b>.</small
-              >
             </div>
           </div>
 

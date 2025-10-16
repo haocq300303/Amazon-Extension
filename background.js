@@ -5,6 +5,7 @@
    - Gửi LOG TỔNG khi AUTO/CLICK: POST /api/logs/ext/log
    - Đăng ký client thủ công: POST /api/shop/ext/connect (qua BACKEND_CONNECT)
    - Bật/tắt auto: AUTO_ENABLE / AUTO_DISABLE / AUTO_SET
+   - MỚI: Auto-capture Amazon Ads CSRF/Headers qua webRequest để token luôn mới
    =============================== */
 
 const log = (...args) => console.log("[APO]", ...args);
@@ -68,13 +69,14 @@ async function getCfg(keys = []) {
     "shopId",
     "refNewOrders",
     "refAllOrders",
-    // Ads (nếu bridge cần)
+    // Ads headers (tự động cập nhật)
     "adsAccountId",
     "adsAdvertiserId",
     "adsClientId",
     "adsMarketplaceId",
     "adsCsrfData",
     "adsCsrfToken",
+    "adsHeaderLastSeen",
     // Auto
     "autoEnabled",
     ...keys,
@@ -698,13 +700,13 @@ async function runFullFlowAndLog(trigger = "AUTO") {
   }
 
   try {
+    // lấy ngày LOCAL (tự động) cho Ads
     const now = new Date();
-    const vnOffset = 7 * 60; // phút GMT+7
-    const local = new Date(
-      now.getTime() + (vnOffset + now.getTimezoneOffset()) * 60000
-    );
-    const todayVN = local.toISOString().slice(0, 10);
-    await runExportAdsSpend(todayVN);
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    const todayLocal = `${yyyy}-${mm}-${dd}`;
+    await runExportAdsSpend(todayLocal);
     phases.push({ type: "ads", status: "success" });
   } catch {
     phases.push({ type: "ads", status: "fail" });
@@ -733,6 +735,63 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await scheduleNextAnchor();
   }
 });
+
+/* ===============================
+   Auto-capture Amazon Ads headers (CSRF) qua webRequest
+   Lưu vào chrome.storage.local để luôn có token/ids mới.
+   =============================== */
+const ADS_HEADER_KEYS = {
+  "amazon-ads-account-id": "adsAccountId",
+  "amazon-advertising-api-advertiserid": "adsAdvertiserId",
+  "amazon-advertising-api-clientid": "adsClientId",
+  "amazon-advertising-api-marketplaceid": "adsMarketplaceId",
+  "amazon-advertising-api-csrf-data": "adsCsrfData",
+  "amazon-advertising-api-csrf-token": "adsCsrfToken",
+};
+
+function collectAdsHeaders(requestHeaders = []) {
+  const out = {};
+  for (const h of requestHeaders) {
+    const k = String(h.name || "").toLowerCase();
+    const key = ADS_HEADER_KEYS[k];
+    if (key) out[key] = h.value || "";
+  }
+  return out;
+}
+
+async function saveAdsHeadersIfAny(found) {
+  const keys = Object.keys(found);
+  if (!keys.length) return;
+
+  const current = await chrome.storage.local.get(keys);
+  let changed = false;
+  for (const k of keys) {
+    if (found[k] && found[k] !== current[k]) {
+      changed = true;
+      break;
+    }
+  }
+  if (changed) {
+    await chrome.storage.local.set({
+      ...found,
+      adsHeaderLastSeen: Date.now(),
+    });
+    log("[ADS] headers updated:", Object.keys(found).join(", "));
+  }
+}
+
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  (details) => {
+    try {
+      // chỉ quan tâm domain Ads
+      if (!details?.url?.startsWith(ADS_BASE)) return;
+      const found = collectAdsHeaders(details.requestHeaders || []);
+      saveAdsHeadersIfAny(found);
+    } catch {}
+  },
+  { urls: [`${ADS_BASE}/*`] },
+  ["requestHeaders", "extraHeaders"]
+);
 
 /* ===============================
    Bridge cho Options / DevTools
@@ -777,15 +836,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 /* ---------- Lifecycle ---------- */
 chrome.runtime.onInstalled.addListener(async () => {
   const st = await chrome.storage.local.get(["autoEnabled"]);
-  await ensureIdentity(); // chỉ tạo clientId/label cục bộ
-  await scheduleAutoRun(st.autoEnabled ?? true); // mặc định bật
+  await ensureIdentity();
+  await scheduleAutoRun(st.autoEnabled ?? true);
+  // tự đăng ký client 1 lần lúc cài/ cập nhật
+  try {
+    await connectBackend();
+  } catch {}
 });
+
 chrome.runtime.onStartup.addListener(async () => {
   const st = await chrome.storage.local.get(["autoEnabled"]);
-  await ensureIdentity(); // chỉ ensure id
-  if (st.autoEnabled ?? true) {
-    await scheduleNextAnchor();
-  } else {
-    await chrome.alarms.clear(AUTO_ALARM);
-  }
+  await ensureIdentity();
+  if (st.autoEnabled ?? true) await scheduleNextAnchor();
+  else await chrome.alarms.clear(AUTO_ALARM);
+  // tự đăng ký lại khi máy/VPS khởi động
+  try {
+    await connectBackend();
+  } catch {}
 });

@@ -1,4 +1,4 @@
-// options.js — APO LNG (khớp background chạy theo mốc 0/4/8/12/16/20, không dùng WS)
+// options.js — APO LNG (auto-capture Ads headers, không nhập tay)
 
 const $ = (s) => document.querySelector(s);
 const log = (...a) => {
@@ -22,9 +22,9 @@ function normalizeBaseUrl(u) {
 function deriveApiUrls(base) {
   if (!base) return { importNewUrl: "", reportAllUrl: "", adsSpendUrl: "" };
   return {
-    importNewUrl: `${base}/ext/import-new-orders`,
-    reportAllUrl: `${base}/ext/report-all-orders`,
-    adsSpendUrl: `${base}/ext/ads-spend`,
+    importNewUrl: `${base}/api/order/update-from-xlsx`,
+    reportAllUrl: `${base}/api/report/import-file`,
+    adsSpendUrl: `${base}/api/ads/import-day`,
   };
 }
 function setTodayDefault() {
@@ -55,6 +55,14 @@ function previewEndpoints() {
   }
   $("#log").textContent = lines.join("\n");
 }
+function fmtLastSeen(ts) {
+  if (!ts) return "";
+  try {
+    return new Date(ts).toLocaleString();
+  } catch {
+    return "";
+  }
+}
 
 // ===== Load saved config =====
 (async () => {
@@ -62,31 +70,25 @@ function previewEndpoints() {
     "ingestUrl",
     "ingestToken",
     "shopId",
-    "adsAccountId",
-    "adsAdvertiserId",
-    "adsClientId",
-    "adsMarketplaceId",
-    // NEW
-    "adsCsrfData",
-    "adsCsrfToken",
+    // chỉ đọc thời điểm auto-capture gần nhất để hiển thị trạng thái
+    "adsHeaderLastSeen",
     // auto
     "autoEnabled",
   ]);
+
   if (st.ingestUrl) $("#ingestUrl").value = st.ingestUrl;
   if (st.ingestToken) $("#ingestToken").value = st.ingestToken;
   if (st.shopId) $("#shopId").value = st.shopId;
 
-  // Ads headers
-  if (st.adsAccountId) $("#adsAccountId").value = st.adsAccountId;
-  if (st.adsAdvertiserId) $("#adsAdvertiserId").value = st.adsAdvertiserId;
-  if (st.adsClientId) $("#adsClientId").value = st.adsClientId;
-  if (st.adsMarketplaceId) $("#adsMarketplaceId").value = st.adsMarketplaceId;
+  const lastSeenStr = fmtLastSeen(st.adsHeaderLastSeen);
+  if (lastSeenStr) {
+    log(`ℹ️ Amazon Ads headers last captured: ${lastSeenStr}`);
+  } else {
+    log(
+      "ℹ️ Chưa bắt được Amazon Ads headers. Mở advertising.amazon.com để extension tự cập nhật."
+    );
+  }
 
-  // NEW: CSRF Data/Token
-  if (st.adsCsrfData) $("#adsCsrfData").value = st.adsCsrfData;
-  if (st.adsCsrfToken) $("#adsCsrfToken").value = st.adsCsrfToken;
-
-  // Auto status
   if ($("#autoStatus")) {
     $("#autoStatus").textContent =
       st.autoEnabled ?? true ? "Auto: ENABLED" : "Auto: DISABLED";
@@ -99,21 +101,11 @@ function previewEndpoints() {
 // Cập nhật preview khi gõ base URL
 $("#ingestUrl").addEventListener("input", previewEndpoints);
 
-// ===== Save config =====
+// ===== Save config (chỉ lưu 3 trường) =====
 $("#saveBtn").onclick = async () => {
   let ingestUrl = $("#ingestUrl").value.trim();
   const ingestToken = $("#ingestToken").value.trim();
   const shopId = $("#shopId").value.trim();
-
-  // Ads headers
-  const adsAccountId = $("#adsAccountId").value.trim();
-  const adsAdvertiserId = $("#adsAdvertiserId").value.trim();
-  const adsClientId = $("#adsClientId").value.trim();
-  const adsMarketplaceId = $("#adsMarketplaceId").value.trim();
-
-  // NEW: CSRF Data/Token
-  const adsCsrfData = $("#adsCsrfData").value.trim();
-  const adsCsrfToken = $("#adsCsrfToken").value.trim();
 
   ingestUrl = normalizeBaseUrl(ingestUrl);
 
@@ -127,18 +119,7 @@ $("#saveBtn").onclick = async () => {
     return;
   }
 
-  await chrome.storage.local.set({
-    ingestUrl,
-    ingestToken,
-    shopId,
-    adsAccountId,
-    adsAdvertiserId,
-    adsClientId,
-    adsMarketplaceId,
-    // NEW
-    adsCsrfData,
-    adsCsrfToken,
-  });
+  await chrome.storage.local.set({ ingestUrl, ingestToken, shopId });
 
   $("#status").textContent = "✅ Đã lưu (lần sau không cần nhập lại).";
   setTimeout(() => ($("#status").textContent = ""), 2200);
@@ -156,7 +137,6 @@ $("#testImport").onclick = async () => {
     log("❌ " + (e.message || e));
   }
 };
-
 $("#testReport").onclick = async () => {
   $("#log").textContent = "Running Report (ALL)...";
   try {
@@ -166,7 +146,6 @@ $("#testReport").onclick = async () => {
     log("❌ " + (e.message || e));
   }
 };
-
 $("#testAds").onclick = async () => {
   $("#log").textContent = "Running Ads Export...";
   const date = $("#adsDate").value.trim();
@@ -182,29 +161,25 @@ $("#testAds").onclick = async () => {
   }
 };
 
-// ===== NEW: Connect backend (đăng ký client) =====
+// ===== Connect backend (đăng ký client) =====
 const btnConnect = $("#btnConnect");
 if (btnConnect) {
   btnConnect.onclick = async () => {
-    // đảm bảo base URL vừa nhập được lưu trước khi connect
     const base = normalizeBaseUrl($("#ingestUrl").value.trim());
     if (base) await chrome.storage.local.set({ ingestUrl: base });
 
     $("#log").textContent = "Connecting to backend...";
     try {
       const r = await chrome.runtime.sendMessage({ type: "BACKEND_CONNECT" });
-      if (r?.ok) {
-        log("✅ BACKEND_CONNECT → " + JSON.stringify(r));
-      } else {
-        log("❌ BACKEND_CONNECT failed → " + JSON.stringify(r || {}));
-      }
+      if (r?.ok) log("✅ BACKEND_CONNECT → " + JSON.stringify(r));
+      else log("❌ BACKEND_CONNECT failed → " + JSON.stringify(r || {}));
     } catch (e) {
       log("❌ BACKEND_CONNECT error: " + (e.message || e));
     }
   };
 }
 
-// ===== NEW: Auto controls (enable/disable/run-now) =====
+// ===== Auto controls (enable/disable/run-now) =====
 const btnAutoEnable = $("#btnAutoEnable");
 if (btnAutoEnable) {
   btnAutoEnable.onclick = async () => {
@@ -231,7 +206,6 @@ if (btnAutoDisable) {
     }
   };
 }
-// Tuỳ chọn: chạy ngay một job đủ 3 bước
 const btnAutoRunNow = $("#btnAutoRunNow");
 if (btnAutoRunNow) {
   btnAutoRunNow.onclick = async () => {

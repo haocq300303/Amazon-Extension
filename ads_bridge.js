@@ -1,22 +1,24 @@
 // ads_bridge.js
-// Chạy trong content-script của trang advertising.amazon.com
-// Nhận payload từ background, build headers từ Options, gọi fetch retrieveReport
-// và trả kết quả về lại background qua sendResponse.
+// Chạy trong content-script của advertising.amazon.com
+// - Nghe background để gọi retrieveReport bằng headers từ Storage
+// - TỰ ĐỘNG chụp headers Amazon Ads bằng cách inject script patch fetch/XHR trong page context
+//   rồi postMessage về content-script -> lưu chrome.storage.local
 
 (() => {
-  const ADS_BASE = "https://advertising.amazon.com";
+  const ADS_HOST = "advertising.amazon.com";
+  const ADS_BASE = `https://${ADS_HOST}`;
   const RETRIEVE_URL = `${ADS_BASE}/a9g-api-gateway/cm/dds/retrieveReport`;
+  const MSG_TYPE_SNIFF = "APO_ADS_HEADER_SNIFF";
 
-  // Đảm bảo đang ở đúng domain
-  if (!location.host.endsWith("advertising.amazon.com")) {
+  if (!location.host.endsWith(ADS_HOST)) {
     console.warn("[APO][ADS] Wrong host for ads_bridge.js:", location.href);
   }
 
-  // Helper: lấy config đã lưu ở Options
-  async function getCfg() {
+  // ---------- Storage helpers ----------
+  function getCfg(keys) {
     return new Promise((resolve) => {
       chrome.storage.local.get(
-        [
+        keys || [
           "adsAccountId",
           "adsAdvertiserId",
           "adsClientId",
@@ -28,8 +30,13 @@
       );
     });
   }
+  function setCfg(obj) {
+    return new Promise((resolve) => {
+      chrome.storage.local.set(obj, () => resolve());
+    });
+  }
 
-  // Build header đúng tên như request hợp lệ trong DevTools
+  // ---------- Build headers cho retrieveReport ----------
   async function buildAdsHeaders() {
     const {
       adsAccountId,
@@ -56,19 +63,24 @@
     if (adsMarketplaceId)
       h["Amazon-Advertising-Api-Marketplaceid"] = adsMarketplaceId;
 
-    // CSRF bắt buộc — thiếu 1 trong 2 sẽ bị 401
+    // CSRF bắt buộc
     if (adsCsrfData) h["Amazon-Advertising-Api-Csrf-Data"] = adsCsrfData;
     if (adsCsrfToken) h["Amazon-Advertising-Api-Csrf-Token"] = adsCsrfToken;
 
+    // Cảnh báo nhẹ nếu thiếu cặp CSRF
+    if (!adsCsrfData || !adsCsrfToken) {
+      console.warn(
+        "[APO][ADS] Missing CSRF headers in storage → request có thể 401. Hãy tương tác Ads UI để auto-capture."
+      );
+    }
     return h;
   }
 
-  // Gọi fetch trong content-script (cùng origin → tự dùng cookie/phiên)
+  // ---------- Gọi retrieveReport bằng headers hiện tại ----------
   async function callRetrieveReport(payload) {
     const headers = await buildAdsHeaders();
 
-    // Log để bạn xem được trên DevTools (tab Ads) mục Console & Network
-    console.log("[APO][ADS] retrieveReport → headers", headers);
+    console.log("[APO][ADS] retrieveReport → headers(use)", headers);
     console.log("[APO][ADS] retrieveReport → payload", payload);
 
     const res = await fetch(RETRIEVE_URL, {
@@ -80,14 +92,145 @@
     });
 
     const text = await res.text();
-    // Hiện ra Network như bạn mong muốn; log thêm kết quả
     console.log("[APO][ADS] retrieveReport ←", res.status, text.slice(0, 300));
-
-    // Trả về cho background (background sẽ parse JSON nếu ok)
     return { status: res.status, ok: res.ok, text };
   }
 
-  // Bridge message từ background
+  // ---------- Inject page script để bắt headers từ request gốc ----------
+  function injectSniffer() {
+    const code = `
+      (function() {
+        const TARGET_HOST = ${JSON.stringify(ADS_HOST)};
+        const MSG_TYPE = ${JSON.stringify(MSG_TYPE_SNIFF)};
+
+        function pickHeaders(h) {
+          // Chuẩn hoá object thường từ Headers (hoặc plain object)
+          const out = {};
+          if (!h) return out;
+          try {
+            if (typeof h.forEach === 'function') {
+              h.forEach((v, k) => out[String(k)] = String(v));
+            } else {
+              for (const k in h) out[String(k)] = String(h[k]);
+            }
+          } catch {}
+          return out;
+        }
+
+        function extractAdsHeaders(headersObj) {
+          const h = {};
+          const src = {};
+          for (const [k, v] of Object.entries(headersObj || {})) {
+            const K = k.toLowerCase();
+            src[K] = v;
+          }
+          // Map các header quan trọng
+          const M = {
+            "amazon-ads-account-id": "adsAccountId",
+            "amazon-advertising-api-advertiserid": "adsAdvertiserId",
+            "amazon-advertising-api-clientid": "adsClientId",
+            "amazon-advertising-api-marketplaceid": "adsMarketplaceId",
+            "amazon-advertising-api-csrf-data": "adsCsrfData",
+            "amazon-advertising-api-csrf-token": "adsCsrfToken"
+          };
+          Object.keys(M).forEach((lk) => {
+            if (src[lk]) h[M[lk]] = src[lk];
+          });
+          return h;
+        }
+
+        function shouldCapture(url) {
+          try {
+            const u = new URL(url, location.href);
+            return u.host.endsWith(TARGET_HOST);
+          } catch {
+            return false;
+          }
+        }
+
+        function send(headersObj) {
+          try {
+            const data = extractAdsHeaders(headersObj);
+            if (Object.keys(data).length === 0) return;
+            window.postMessage({ __apo: true, type: MSG_TYPE, data, ts: Date.now() }, "*");
+          } catch (e) {}
+        }
+
+        // ---- Patch fetch ----
+        const _fetch = window.fetch;
+        window.fetch = function(input, init) {
+          try {
+            const url = (typeof input === 'string') ? input : (input && input.url ? input.url : String(input));
+            if (shouldCapture(url)) {
+              const hdrs = pickHeaders(init && init.headers);
+              // Nếu page tự gắn headers vào fetch -> capture
+              send(hdrs);
+            }
+          } catch {}
+          return _fetch.apply(this, arguments);
+        };
+
+        // ---- Patch XHR ----
+        const _open = XMLHttpRequest.prototype.open;
+        const _send = XMLHttpRequest.prototype.send;
+        const _setReqHeader = XMLHttpRequest.prototype.setRequestHeader;
+
+        XMLHttpRequest.prototype.open = function(method, url) {
+          try {
+            this.__apo_url = url;
+            this.__apo_headers = {};
+          } catch {}
+          return _open.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+          try {
+            if (!this.__apo_headers) this.__apo_headers = {};
+            this.__apo_headers[k] = v;
+          } catch {}
+          return _setReqHeader.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(body) {
+          try {
+            if (shouldCapture(this.__apo_url)) {
+              send(this.__apo_headers || {});
+            }
+          } catch {}
+          return _send.apply(this, arguments);
+        };
+
+        // Đánh dấu đã ready
+        console.log("[APO][ADS] page sniffer injected");
+      })();
+    `;
+    const s = document.createElement("script");
+    s.textContent = code;
+    (document.head || document.documentElement).appendChild(s);
+    s.remove();
+  }
+
+  // ---------- Nhận headers từ page → lưu storage ----------
+  let lastWrite = 0;
+  window.addEventListener("message", async (evt) => {
+    const msg = evt && evt.data;
+    if (!msg || !msg.__apo || msg.type !== MSG_TYPE_SNIFF) return;
+    const data = msg.data || {};
+    try {
+      // debounce nhỏ để tránh spam storage
+      const now = Date.now();
+      if (now - lastWrite < 300) return;
+      lastWrite = now;
+
+      const toSave = { ...data, adsHeaderLastSeen: now };
+      await setCfg(toSave);
+      console.log("[APO][ADS] captured headers -> storage", toSave);
+    } catch (e) {
+      console.warn("[APO][ADS] save headers error:", e);
+    }
+  });
+
+  injectSniffer();
+
+  // ---------- Bridge từ background ----------
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       if (msg?.type !== "ADS_FETCH_REPORT") return;
@@ -103,7 +246,7 @@
         });
       }
     })();
-    return true; // keep sendResponse async
+    return true; // async
   });
 
   console.log("[APO][ADS] ads_bridge.js ready on", location.href);
