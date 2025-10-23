@@ -2,363 +2,71 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>APO LNG – Options</title>
-    <style>
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        margin: 0;
-        padding: 10px;
-        height: 100vh;
-        color: #333;
-        overflow: hidden;
-      }
-      .container {
-        max-width: 1200px;
-        width: 40%;
-        height: calc(100vh - 20px);
-        margin: 0 auto;
-        background: rgba(255, 255, 255, 0.95);
-        backdrop-filter: blur(10px);
-        border-radius: 12px;
-        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
-        overflow: hidden;
-        display: flex;
-        flex-direction: column;
-      }
-      .header {
-        background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
-        color: #fff;
-        padding: 15px;
-        text-align: center;
-        position: relative;
-        flex-shrink: 0;
-      }
-      .header::before {
-        content: "";
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 4px;
-        background: linear-gradient(
-          90deg,
-          #e74c3c,
-          #f39c12,
-          #2ecc71,
-          #3498db,
-          #9b59b6
-        );
-      }
-      h2 {
-        margin: 0;
-        font-size: 2em;
-        font-weight: 400;
-        letter-spacing: -0.5px;
-      }
-
-      .content {
-        padding: 15px;
-        flex: 1;
-        overflow-y: auto;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-      }
-      section {
-        background: #fff;
-        border: none;
-        border-radius: 8px;
-        padding: 15px;
-        margin: 0;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-        transition: transform 0.3s, box-shadow 0.3s;
-        flex-shrink: 0;
-      }
-      section:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 12px 35px rgba(0, 0, 0, 0.12);
-      }
-
-      label {
-        display: block;
-        margin: 8px 0 4px;
-        font-weight: 600;
-        color: #2c3e50;
-        font-size: 0.9em;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-      }
-      input {
-        width: 100%;
-        padding: 12px 16px;
-        border: 2px solid #e9ecef;
-        border-radius: 8px;
-        font-size: 16px;
-        transition: all 0.3s;
-        background: #fafbfc;
-      }
-      input:focus {
-        outline: none;
-        border-color: #667eea;
-        background: #fff;
-        box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
-        transform: translateY(-1px);
-      }
-      input:disabled {
-        background: #f8f9fa;
-        color: #6c757d;
-        cursor: not-allowed;
-      }
-      small.helper {
-        display: block;
-        color: #6c757d;
-        margin-top: 6px;
-        line-height: 1.3;
-      }
-
-      button {
-        margin: 4px 2px;
-        padding: 12px 20px;
-        border: none;
-        border-radius: 8px;
-        font-size: 14px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.3s;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        position: relative;
-        overflow: hidden;
-      }
-      button::before {
-        content: "";
-        position: absolute;
-        top: 0;
-        left: -100%;
-        width: 100%;
-        height: 100%;
-        background: linear-gradient(
-          90deg,
-          transparent,
-          rgba(255, 255, 255, 0.2),
-          transparent
-        );
-        transition: left 0.5s;
-      }
-      button:hover::before {
-        left: 100%;
-      }
-      #saveBtn {
-        background: linear-gradient(135deg, #2ecc71 0%, #27ae60 100%);
-        color: #fff;
-        width: 100%;
-      }
-      #saveBtn:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 20px rgba(46, 204, 113, 0.3);
-      }
-
-      button[id^="test"] {
-        background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
-        color: #fff;
-        flex: 1;
-      }
-      button[id^="test"]:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 20px rgba(52, 152, 219, 0.3);
-      }
-      #openSW {
-        background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%);
-        color: #fff;
-      }
-
-      .row {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-        margin: 8px 0;
-      }
-      .button-row {
-        display: flex;
-        gap: 8px;
-        margin: 8px 0;
-      }
-
-      .ok {
-        color: #2ecc71;
-        margin-top: 15px;
-        padding: 10px;
-        background: rgba(46, 204, 113, 0.1);
-        border-radius: 8px;
-        font-weight: 500;
-      }
-      pre {
-        background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
-        color: #ecf0f1;
-        padding: 15px;
-        border-radius: 8px;
-        white-space: pre-wrap;
-        margin-top: 8px;
-        font-family: "Monaco", "Menlo", monospace;
-        font-size: 13px;
-        line-height: 1.4;
-        max-height: 140px;
-        overflow-y: auto;
-        box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.2);
-      }
-
-      .config-section {
-        border-left: 4px solid #667eea;
-      }
-      .control-section {
-        border-left: 4px solid #27ae60;
-      }
-      .test-section {
-        border-left: 4px solid #f39c12;
-      }
-      .section-title {
-        font-size: 1.1em;
-        font-weight: 600;
-        color: #2c3e50;
-        margin-bottom: 10px;
-        padding-bottom: 5px;
-        border-bottom: 2px solid #ecf0f1;
-      }
-      .muted {
-        color: #6c757d;
-        font-size: 13px;
-      }
-
-      .badge {
-        display: inline-block;
-        padding: 4px 8px;
-        background: #eef2ff;
-        color: #1d4ed8;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 600;
-      }
-
-      @media (max-width: 768px) {
-        .row {
-          grid-template-columns: 1fr;
-          gap: 15px;
-        }
-        .button-row {
-          flex-direction: column;
-        }
-        body {
-          padding: 10px;
-        }
-        .content {
-          padding: 20px;
-        }
-        h2 {
-          font-size: 1.8em;
-        }
-      }
-      .fade-in {
-        animation: fadeIn 0.6s ease-out;
-      }
-      @keyframes fadeIn {
-        from {
-          opacity: 0;
-          transform: translateY(20px);
-        }
-        to {
-          opacity: 1;
-          transform: none;
-        }
-      }
-
-      /* Ẩn block Ads inputs cũ để tương thích options.js nhưng không lộ UI */
-      .hidden {
-        display: none !important;
-      }
-    </style>
+    <title>APO LNG - Popup</title>
+    <link rel="stylesheet" href="options.css" />
   </head>
+
   <body>
-    <div class="container fade-in">
-      <div class="header">
-        <h2>APO LNG – Options Dashboard</h2>
+    <div class="wrap">
+      <h2>APO LNG</h2>
+
+      <!-- CONFIG -->
+      <div class="card">
+        <div class="title">🔧 Configuration</div>
+        <div class="flex">
+          <div>
+            <label>API Base URL</label>
+            <input id="ingestUrl" placeholder="https://api.lngmerch.co" />
+          </div>
+          <div>
+            <label>Shop ID</label>
+            <input id="shopId" placeholder="6881aba9c1bbdfc541b5cd4d" />
+          </div>
+        </div>
+        <button
+          id="saveBtn"
+          class="btn green"
+          style="width: 100%; margin-top: 8px"
+        >
+          💾 Save configuration
+        </button>
+        <div class="ok" id="status"></div>
       </div>
 
-      <div class="content">
-        <!-- CONFIG -->
-        <section class="config-section">
-          <div class="section-title">🔧 Cấu hình hệ thống</div>
-
-          <div class="row">
-            <div>
-              <label for="ingestUrl">🌐 API Base URL</label>
-              <input id="ingestUrl" placeholder="https://api.lngmerch.co" />
-              <small class="helper">VD: https://api.lngmerch.co</small>
-            </div>
-            <div>
-              <label for="ingestToken">🔑 Ingest Token (tuỳ chọn)</label>
-              <input id="ingestToken" placeholder="x-access-token" />
-              <small class="helper">Để trống nếu backend không yêu cầu.</small>
-            </div>
+      <!-- TEST -->
+      <div class="card">
+        <div class="title">🧪 Import</div>
+        <div class="section-title flex">
+          <div>⏱ Auto Import (0h • 4h • 8h • 12h • 16h • 20h)</div>
+          <label class="switch">
+            <input type="checkbox" />
+            <span class="slider round"></span>
+          </label>
+        </div>
+        <div class="row" style="margin-bottom: 8px">
+          <div>
+            <label for="adsDate">Ads Date (YYYY-MM-DD)</label>
+            <input id="adsDate" placeholder="2025-10-17" />
           </div>
-
-          <div class="row">
-            <div>
-              <label for="shopId">🏪 Shop ID (ObjectId hoặc Seller ID)</label>
-              <input id="shopId" placeholder="64f... hoặc A3XXXX..." />
-              <small class="helper"
-                >Dùng để map log/ingest với đúng shop.</small
-              >
-            </div>
-            <div>
-              <label for="shopId">🔌 Connect backend</label>
-              <button id="btnConnect" title="Đăng ký client lên backend">
-                🔌 Connect backend
-              </button>
-            </div>
+          <div style="display: flex; align-items: end">
+            <button id="testAds" class="btn purple" style="width: 100%">
+              📈 Export Ads Spend
+            </button>
           </div>
+        </div>
 
-          <button id="saveBtn">💾 Lưu cấu hình</button>
-          <div class="ok" id="status"></div>
-        </section>
+        <button
+          id="btnAutoRunNow"
+          class="btn"
+          style="width: 100%; margin-top: 8px"
+        >
+          ▶️ Import (Orders, Report, Ads)
+        </button>
+      </div>
 
-        <!-- CONTROL: Auto schedule & Run -->
-        <section class="control-section">
-          <div class="section-title">
-            ⏱ Auto Import (0h • 4h • 8h • 12h • 16h • 20h)
-          </div>
-          <div class="button-row">
-            <button id="btnAutoEnable">🟢 Enable Auto</button>
-            <button id="btnAutoDisable">🔴 Disable Auto</button>
-            <button id="btnAutoRunNow">⚡ Run Now</button>
-            <button id="openSW">🔍 Open Service Worker Console</button>
-          </div>
-          <div class="ok" id="autoStatus">Auto: ...</div>
-        </section>
-
-        <!-- TEST -->
-        <section class="test-section">
-          <div class="section-title">🧪 Kiểm tra & Thử nghiệm</div>
-          <div class="button-row">
-            <button id="testImport">▶️ Import Orders (NEW)</button>
-            <button id="testReport">▶️ Import Report Orders</button>
-          </div>
-
-          <div class="row">
-            <div>
-              <label for="adsDate">📅 Ads Date (YYYY-MM-DD)</label>
-              <input id="adsDate" placeholder="2025-09-15" />
-            </div>
-            <div style="display: flex; align-items: end">
-              <button id="testAds">📈 Export Ads Spend</button>
-            </div>
-          </div>
-
-          <pre id="log"></pre>
-        </section>
+      <div class="card">
+        <div class="title">📜 Log</div>
+        <pre id="log"></pre>
       </div>
     </div>
 

@@ -9,7 +9,6 @@
     "48": "logo.jpg",
     "128": "logo.jpg"
   },
-
   "permissions": [
     "cookies",
     "storage",
@@ -19,14 +18,12 @@
     "webRequest",
     "webRequestBlocking"
   ],
-
   "host_permissions": [
     "https://sellercentral.amazon.com/*",
     "https://advertising.amazon.com/*",
     "https://api.lngmerch.co/*",
     "http://localhost:5000/*"
   ],
-
   "content_scripts": [
     {
       "matches": ["https://advertising.amazon.com/*"],
@@ -34,16 +31,17 @@
       "run_at": "document_idle"
     }
   ],
-
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
-
-  "options_page": "options.html",
-
   "action": {
-    "default_title": "AP Order",
-    "default_icon": "logo.jpg"
+    "default_title": "APO LNG Group",
+    "default_popup": "options.html",
+    "default_icon": {
+      "16": "logo.jpg",
+      "32": "logo.jpg",
+      "128": "logo.jpg"
+    }
   }
 }
