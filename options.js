@@ -40,16 +40,9 @@ function setTodayDefault() {
 function previewEndpoints() {
   const raw = $("#ingestUrl")?.value || "";
   const base = normalizeBaseUrl(raw);
-  const { importNewUrl, reportAllUrl, adsSpendUrl } = deriveApiUrls(base);
 
   const lines = base
-    ? [
-        "🔗 Endpoints:",
-        `• ${importNewUrl}`,
-        `• ${reportAllUrl}`,
-        `• ${adsSpendUrl}`,
-        "⏱ Auto anchors: 00:00 | 04:00 | 08:00 | 12:00 | 16:00 | 20:00",
-      ]
+    ? ["⏱ Auto anchors: 00:00 | 04:00 | 08:00 | 12:00 | 16:00 | 20:00"]
     : ["⚠️ Nhập API Base URL (ví dụ: https://api.lngmerch.co)"];
 
   const box = $("#log");
@@ -112,19 +105,13 @@ on($("#saveBtn"), "click", async () => {
     let ingestUrl = normalizeBaseUrl($("#ingestUrl")?.value || "");
     const shopId = ($("#shopId")?.value || "").trim();
 
-    if (!ingestUrl)
-      return ($("#status").textContent =
-        "❌ Vui lòng nhập API Base URL hợp lệ.");
+    if (!ingestUrl) return log("❌ Vui lòng nhập API Base URL hợp lệ.");
     if (!/^https?:\/\//i.test(ingestUrl))
-      return ($("#status").textContent =
-        "❌ URL phải bắt đầu bằng http:// hoặc https://");
+      return log("❌ URL phải bắt đầu bằng http:// hoặc https://");
 
     await chrome.storage.local.set({ ingestUrl, shopId });
-    $("#status").textContent = "✅ Đã lưu cấu hình.";
     log("Saved config", { ingestUrl, shopId });
     previewEndpoints();
-
-    setTimeout(() => ($("#status").textContent = ""), 1800);
   } catch (e) {
     log("Save error:", e?.message || e);
   }
@@ -182,6 +169,36 @@ on($("#btnConnect"), "click", async () => {
     else log("❌ BACKEND_CONNECT failed →", r || {});
   } catch (e) {
     log("❌ BACKEND_CONNECT error:", e?.message || e);
+  }
+});
+
+/* ================================================================
+   SOCKET.IO — Manual connect button in Options
+   - Yêu cầu background đã hỗ trợ msg type: "MANUAL_SOCKET_CONNECT"
+   - Nút HTML: <button id="btnSocketConnect">Connect Socket</button>
+   ================================================================ */
+
+on($("#btnSocketConnect"), "click", async () => {
+  try {
+    // Đồng bộ cấu hình mới nhất (nếu người dùng vừa sửa)
+    const raw = $("#ingestUrl")?.value || "";
+    const base = normalizeBaseUrl(raw);
+    const shopId = ($("#shopId")?.value || "").trim();
+    if (base) await chrome.storage.local.set({ ingestUrl: base });
+    if (shopId) await chrome.storage.local.set({ shopId });
+
+    log("🔌 Connecting Socket.IO to backend...");
+    const res = await chrome.runtime.sendMessage({
+      type: "SOCKET_CONNECT",
+    });
+    if (res?.ok) {
+      log("✅ Socket connected manually.");
+    } else {
+      const msg = res?.message || "Unknown error";
+      log("❌ Socket connect failed:", msg);
+    }
+  } catch (e) {
+    log("❌ SOCKET_CONNECT error:", e?.message || e);
   }
 });
 
