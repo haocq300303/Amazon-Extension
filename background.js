@@ -94,6 +94,7 @@ function deriveApiUrls(ingestUrl) {
     importOrderUrl: `${base}/api/ext/import-order`,
     importReportUrl: `${base}/api/ext/import-report`,
     importAdsUrl: `${base}/api/ext/import-ads`,
+    getSeller: `${base}/api/user/employee-code`,
   };
 }
 
@@ -286,41 +287,6 @@ async function postFileTo(url, fields) {
   return ct.includes("application/json")
     ? res.json()
     : { ok: true, raw: await res.text() };
-}
-
-async function postDbLog({
-  action,
-  type,
-  level = "info",
-  message,
-  jobId,
-  meta,
-}) {
-  // nếu bạn không muốn log DB, có thể xóa helper này
-  try {
-    const { ingestUrl, ingestToken, shopId } = await getCfg();
-    const { base } = deriveApiUrls(ingestUrl);
-    if (!base) return;
-    const { clientId, clientLabel } = await ensureIdentity();
-    await fetch(`${base}/api/logs`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-access-token": ingestToken || "",
-      },
-      body: JSON.stringify({
-        shopId,
-        machineId: clientId,
-        label: clientLabel,
-        action, // 'click' | 'auto'
-        type, // 'import_order' | 'ads'
-        level, // 'info' | 'error'
-        message,
-        jobId,
-        meta,
-      }),
-    }).catch(() => {});
-  } catch {}
 }
 
 async function runImportNewOrders(referenceOverride) {
@@ -521,7 +487,7 @@ function buildCampaignSpendPayload({
             comparisonOperator: "IN",
             field: "state",
             not: false,
-            values: ["ENABLED", "PAUSED", "ARCHIVED"],
+            values: ["ENABLED", "PAUSED"],
           },
         ],
       },
@@ -569,6 +535,7 @@ async function fetchAllCampaignSpend(startDate, endDate, pageSize = 300) {
     campaignName: r.campaignName ?? "",
     date: startDate,
     spend: Number(r.spend ?? 0),
+    state: r.state ?? "",
   }));
 }
 
@@ -810,6 +777,101 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
   ["requestHeaders", "extraHeaders"]
 );
 
+/* =========================
+   ADS — Check Campaign Names (using your existing bridge)
+   ========================= */
+
+function todayYMD() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+async function fetchEmployeeCodes() {
+  const { ingestUrl } = await getCfg();
+  const { getSeller } = deriveApiUrls(ingestUrl);
+  try {
+    const response = await fetch(getSeller, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    const data = await response.json();
+
+    if (!Array.isArray(data)) {
+      throw new Error("Invalid response format, expected an array");
+    }
+
+    console.log("✅ Danh sách mã nhân viên:", data);
+    return data; // Ví dụ: ["J2501","J2502","J2503",...]
+  } catch (error) {
+    console.error("❌ Lỗi khi lấy mã nhân viên:", error.message);
+    return [];
+  }
+}
+
+// background.js (hoặc module dùng để kiểm tra)
+function checkInvalidCampaignNames(campaigns, employeeCodes) {
+  // chuẩn hoá allowed: Set uppercase
+  const allowed = new Set(
+    (employeeCodes || []).map((c) => String(c).trim().toUpperCase())
+  );
+
+  // helper: lấy prefix hợp lệ dạng 1 chữ + 4 số ở đầu chuỗi
+  function extractPrefix5(name) {
+    if (!name) return "";
+    const s = String(name).trim();
+    const m = s.match(/^([A-Za-z]\d{4})/); // ^: ngay đầu chuỗi
+    return m ? m[1].toUpperCase() : ""; // VD: "J2501"
+  }
+
+  let totalChecked = 0;
+  const invalidList = [];
+
+  for (const c of campaigns || []) {
+    const name = (c.campaignName ?? c.name ?? "").trim();
+    if (!name) continue;
+    totalChecked++;
+
+    const prefix = extractPrefix5(name);
+    const isValid = prefix && allowed.has(prefix);
+
+    if (!isValid) {
+      invalidList.push({
+        name,
+        state: c.state || c.status || "Unknown",
+        prefixFound: prefix || null,
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    total: totalChecked,
+    invalidCount: invalidList.length,
+    invalidList,
+  };
+}
+
+async function checkCampaign(date) {
+  if (!date) throw new Error("date (YYYY-MM-DD) required");
+  const employeeCodes = await fetchEmployeeCodes();
+  const rows = await fetchAllCampaignSpend(date, date, 300);
+
+  const result = checkInvalidCampaignNames(rows, employeeCodes);
+
+  return {
+    ok: true,
+    totalChecked: result?.total,
+    invalidCount: result?.invalidCount,
+    invalidList: result?.invalidList,
+  };
+}
+
 /* ================================================================
    SOCKET.IO AUTO CONNECT + KEEPALIVE (Realtime only)
    ================================================================ */
@@ -919,36 +981,41 @@ export async function connectSocketIO(force = false) {
     socket.on("server:task", async (task) => {
       const { type, payload } = task || {};
       try {
-        if (type === "IMPORT_ORDERS") {
-          runFullFlowAndEmitLogs("click");
-          // Log trong 2 hàm trên sẽ tự ghi DB như bạn đã cấu hình
-        } else if (type === "IMPORT_ADS_SPEND") {
-          const day = payload?.date;
-          if (!day) throw new Error("Missing payload.date");
-          try {
-            await runExportAdsSpend(day);
-            await postLogSingle({
-              base,
-              shopId,
-              machineId: clientId,
-              label: clientLabel,
-              action: "click",
-              level: "success",
-              message: "✅ Import ads success!",
-            });
-          } catch (error) {
-            await postLogSingle({
-              base,
-              shopId,
-              machineId: clientId,
-              label: clientLabel,
-              action: "click",
-              level: "error",
-              message: "❌ Import ads error!",
-            });
-          }
-        } else {
-          console.log("[SOCKET] Unknown task type:", type);
+        switch (type) {
+          case "PULL_ALL":
+            runFullFlowAndEmitLogs("click");
+            break;
+          case "IMPORT_ORDERS":
+            runFullFlowAndEmitLogs("click");
+            break;
+          case "IMPORT_ADS_SPEND":
+            const day = payload?.date;
+            if (!day) throw new Error("Missing payload.date");
+            try {
+              await runExportAdsSpend(day);
+              await postLogSingle({
+                base,
+                shopId,
+                machineId: clientId,
+                label: clientLabel,
+                action: "click",
+                level: "success",
+                message: "✅ Import ads success!",
+              });
+            } catch (error) {
+              await postLogSingle({
+                base,
+                shopId,
+                machineId: clientId,
+                label: clientLabel,
+                action: "click",
+                level: "error",
+                message: "❌ Import ads error!",
+              });
+            }
+            break;
+          default:
+            break;
         }
       } catch (e) {
         console.error("[SOCKET] task error:", e?.message || e);
@@ -1011,6 +1078,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         await chrome.storage.local.set({ autoConnect: !!msg.enabled });
         sendResponse({ ok: true, enabled: !!msg.enabled });
         return;
+      }
+
+      if (msg?.type === "ADS_CHECK_NAMES") {
+        const date = todayYMD();
+        return sendResponse(await checkCampaign(date));
       }
 
       // Auto on/off
